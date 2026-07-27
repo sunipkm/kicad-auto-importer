@@ -1,0 +1,14 @@
+//! Core, GUI-free import pipeline for kicad-auto-importer — ported
+//! from the sibling Python KiCad plugin's `plugins/importer/*`,
+//! `plugins/watcher.py`, and `plugins/config.py`. No dependency on any
+//! GUI toolkit or on KiCad itself; the `app` crate is the only thing
+//! that knows about windows.
+
+pub mod config;
+pub mod footprint_importer;
+pub mod kicad_paths;
+pub mod model_importer;
+pub mod sexp;
+pub mod symbol_importer;
+pub mod watcher;
+pub mod zip_importer;

@@ -1,0 +1,8 @@
+[package]
+name = "kicad_auto_importer_app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+kicad_auto_importer_core = { path = "../core" }
