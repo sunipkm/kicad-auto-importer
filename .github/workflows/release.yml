@@ -3,7 +3,12 @@ name: release
 on:
   push:
     tags:
+      # GitHub Actions tag filters must match the whole tag name, so a
+      # plain "vX.Y.Z" pattern alone would never even trigger this
+      # workflow for a pre-release tag like "v0.0.1-pre0" — the second
+      # pattern covers "vX.Y.Z" plus any "-suffix".
       - "v[0-9]+.[0-9]+.[0-9]+"
+      - "v[0-9]+.[0-9]+.[0-9]+-*"
 
 jobs:
   # test.yml's job already sets up a full toolchain per OS/target to run
@@ -18,10 +23,29 @@ jobs:
   release:
     needs: build
     runs-on: ubuntu-latest
+    # softprops/action-gh-release needs write access to create the release;
+    # the default GITHUB_TOKEN doesn't grant that unless a job explicitly
+    # asks for it here (this is what a bare 403 "Resource not accessible
+    # by integration" from the release step means).
+    permissions:
+      contents: write
     steps:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
+      # A tag like "v0.0.1-pre0" (anything past "vX.Y.Z") is a
+      # pre-release, per the tag patterns above — softprops/action-gh-release
+      # doesn't infer this on its own, so it's computed here and fed to
+      # its `prerelease` input.
+      - name: Determine prerelease
+        id: prerelease
+        run: |
+          if [[ "${{ github.ref_name }}" == *-* ]]; then
+            echo "value=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=false" >> "$GITHUB_OUTPUT"
+          fi
       - uses: softprops/action-gh-release@v2
         with:
           files: artifacts/*/*
+          prerelease: ${{ steps.prerelease.outputs.value }}
