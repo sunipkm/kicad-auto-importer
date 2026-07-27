@@ -6,4 +6,4 @@ members = ["crates/core", "crates/app"]
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-repository = "https://github.com/sunip/kicad-auto-importer"
+repository = "https://github.com/sunipkm/kicad-auto-importer"

@@ -1,5 +1,5 @@
 //! Config persistence — a drop-in-compatible reader/writer for the
-//! existing Python plugin's `ultralib_importer.json`, so a project
+//! existing Python plugin's `.kicad-autoimport-cfg.json`, so a project
 //! already configured there needs zero reconfiguration to work with
 //! this tool.
 //!
@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-pub const CONFIG_FILENAME: &str = "ultralib_importer.json";
+pub const CONFIG_FILENAME: &str = ".kicad-autoimport-cfg.json";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ImporterConfig {

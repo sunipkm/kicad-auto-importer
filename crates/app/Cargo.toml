@@ -8,4 +8,5 @@ license.workspace = true
 kicad_auto_importer_core = { path = "../core" }
 eframe = "0.29"
 egui = "0.29"
+egui-phosphor = "0.7"
 rfd = "0.15"

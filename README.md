@@ -1,5 +1,10 @@
 # kicad-auto-importer
 
+[![test](https://github.com/sunipkm/kicad-auto-importer/actions/workflows/test.yml/badge.svg)](https://github.com/sunipkm/kicad-auto-importer/actions/workflows/test.yml)
+[![release](https://github.com/sunipkm/kicad-auto-importer/actions/workflows/release.yml/badge.svg)](https://github.com/sunipkm/kicad-auto-importer/actions/workflows/release.yml)
+[![Latest release](https://img.shields.io/github/v/release/sunipkm/kicad-auto-importer)](https://github.com/sunipkm/kicad-auto-importer/releases/latest)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 A standalone watch-folder importer for KiCad part libraries. It watches
 a folder (e.g. your Downloads folder) for part-provider ZIP downloads
 (UltraLibrarian / Mouser / DigiKey), extracts them, and imports the
@@ -8,39 +13,56 @@ libraries — registering the destination symbol and footprint libraries
 in that project's `sym-lib-table` / `fp-lib-table` so KiCad picks them
 up automatically.
 
-This is a companion to the
-[part-provider-importer](https://github.com/sunipkm/part-provider-importer)
-KiCad pcbnew plugin (Python), which that repo's own README describes in
-more detail. That plugin does two things: watches a folder and imports
-downloads (what this program replaces), and lets you cherry-pick
-symbols/footprints from another KiCad project into the one you have
-open (which stays a Python pcbnew ActionPlugin, since it benefits from
-running inside KiCad).
+This tool does not depend on KiCad — it's a single
+native binary with its own GUI that you run alongside KiCad, or leave
+running in the background to import new parts as they land in your
+downloads folder.
 
-Unlike the Python plugin, this program has **no dependency on KiCad,
-Python, or wxPython at all** — it's a single native binary you run
-alongside KiCad (or leave running in the background).
+## Features
 
-## Config compatibility
+- Watches a folder and imports part-provider ZIPs as they arrive, or
+  imports a single ZIP / folder on demand.
+- Registers imported symbol and footprint libraries in the target
+  project's `sym-lib-table` / `fp-lib-table` automatically.
+- Copies referenced 3-D models into the project and rewrites model
+  paths to a `${KIPRJMOD}`-relative URI.
+- Optional move-after-import and timestamped backups of the source ZIP.
+- Single self-contained binary — no KiCad, Python, or runtime
+  dependencies to install.
 
-This tool reads and writes the exact same `ultralib_importer.json`
-schema as the Python plugin — if a project is already configured by
-the Python plugin's watch-folder feature, this tool picks it up with
-zero reconfiguration (and vice versa).
+## Installation
 
-One deliberate difference: this tool always requires a known KiCad
-project directory (there's no global fallback config location) — it's
-explicitly scoped to one project per running instance.
+### Download a release
 
-## Building
+Prebuilt binaries for Linux, macOS (Intel and Apple Silicon), and
+Windows are published on the
+[Releases page](https://github.com/sunipkm/kicad-auto-importer/releases/latest):
 
-```
-cargo build --release
+| Platform             | Artifact                                         |
+| -------------------- | ------------------------------------------------- |
+| Windows (x86_64)     | `kicad-auto-importer-x86_64-pc-windows-msvc.zip`   |
+| Linux (x86_64)       | `kicad-auto-importer-x86_64-unknown-linux-gnu.tar.gz` |
+| macOS (Intel)        | `kicad-auto-importer-x86_64-apple-darwin.tar.gz`   |
+| macOS (Apple Silicon) | `kicad-auto-importer-aarch64-apple-darwin.tar.gz` |
+
+Unzip or untar the archive and run the executable — there is no
+installer and no external runtime to set up.
+
+### Build from source
+
+```sh
+cargo build --release -p kicad_auto_importer_app
 ```
 
 Produces a single binary at `target/release/kicad_auto_importer_app`
-(`.exe` on Windows). No installation step, no external runtime
-dependencies.
+(`.exe` on Windows).
+
+## Config file
+
+Each project's settings (watch folder, symbol/footprint library paths,
+options) are stored in `.kicad-autoimport-cfg.json` inside that project's
+directory. A project is always scoped to one running instance — there
+is no global fallback config location.
 
 ## Workspace layout
 
@@ -53,16 +75,6 @@ dependencies.
   library / footprint library / options, a start/stop toggle, and a
   log pane) that drives `core`.
 
-## A note on KiCad's file format
+## License
 
-KiCad's own quoting rules for its S-expression files are stricter and
-more inconsistent than they look: some numeric-looking values are
-always quoted (`(property "Height" "1.04" ...)`, `(number "7" ...)`),
-while some keyword-like values are always bare
-(`(justify left top)`, `(type default)`) — and a couple of fields even
-mix bareword names with quoted values in the same node
-(`(property ki_fp_filters "...")`). `crates/core/src/sexp.rs` documents
-this in detail; the short version is that quoting is decided by
-**what the source file already did**, never guessed from an atom's
-content. Getting this wrong silently corrupts a project's library files
-in a way KiCad's own parser then hard-rejects.
+MIT — see [LICENSE](LICENSE).
