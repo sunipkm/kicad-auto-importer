@@ -60,13 +60,35 @@ pub struct MainApp {
     /// Always `None` on Linux, where the tray icon instead lives for the
     /// process's lifetime on its own dedicated GTK thread (see `tray`).
     _tray_icon: Option<tray_icon::TrayIcon>,
+    /// The tray menu's single start/stop toggle item, held onto so its
+    /// label/enabled state can be updated directly as watching state
+    /// changes (see `sync_tray_toggle`). Same Linux/non-Linux split as
+    /// `_tray_icon`: always `None` on Linux, where the real item lives
+    /// on the GTK thread instead and is synced via `tray::set_state`.
+    tray_toggle_item: Option<tray_icon::menu::MenuItem>,
 }
 
 impl MainApp {
-    pub fn new(wake_rx: mpsc::Receiver<()>, tray_icon: Option<tray_icon::TrayIcon>) -> Self {
+    pub fn new(
+        wake_rx: mpsc::Receiver<()>,
+        tray_icon: Option<tray_icon::TrayIcon>,
+        tray_toggle_item: Option<tray_icon::menu::MenuItem>,
+    ) -> Self {
         let global_settings = GlobalSettings::load();
-        MainApp {
-            project_path: String::new(),
+        // Restore the last-opened project, if its directory still
+        // exists — a since-deleted/moved project would otherwise show a
+        // path with nothing behind it. Every other per-project setting
+        // (watch folder, libraries, options) then comes back for free
+        // via `load_config_for_current_project`, since it already lives
+        // in that project's own `ImporterConfig`.
+        let project_path = global_settings.last_project_path.clone();
+        let restore_project = !project_path.is_empty() && Path::new(&project_path).is_dir();
+        let mut app = MainApp {
+            project_path: if restore_project {
+                project_path
+            } else {
+                String::new()
+            },
             watch_folder: String::new(),
             symbol_lib: String::new(),
             footprint_lib: String::new(),
@@ -86,7 +108,12 @@ impl MainApp {
             wake_rx,
             force_quit: false,
             _tray_icon: tray_icon,
+            tray_toggle_item,
+        };
+        if restore_project {
+            app.load_config_for_current_project();
         }
+        app
     }
 }
 
@@ -162,13 +189,14 @@ impl MainApp {
     }
 
     /// Unlike `save_config`, not tied to `project_dir()` — Mouser/DigiKey
-    /// credentials are account-level, not per-project (see
-    /// `GlobalSettings`'s module docs).
+    /// credentials and the last-opened project path are account-/app-level,
+    /// not per-project (see `GlobalSettings`'s module docs).
     fn save_global_settings(&mut self) {
         let settings = GlobalSettings {
             mouser_api_key: self.mouser_api_key.clone(),
             digikey_client_id: self.digikey_client_id.clone(),
             digikey_client_secret: self.digikey_client_secret.clone(),
+            last_project_path: self.project_path.clone(),
         };
         if let Err(exc) = settings.save() {
             self.log(format!("\u{2718} Could not save API settings: {exc}"));
@@ -309,6 +337,25 @@ impl MainApp {
         })
     }
 
+    /// Same validation `build_settings(true)` runs before actually
+    /// starting the watcher, minus the `self.status` side effect —
+    /// used every frame (see `sync_tray_toggle`) to decide whether the
+    /// "Start Watching" controls (both the main window's button and the
+    /// tray menu's toggle item) should be enabled at all, without
+    /// clobbering a status message with each redundant check.
+    fn can_start_watching(&self) -> bool {
+        if self.project_dir().is_none() {
+            return false;
+        }
+        if self.watch_folder.trim().is_empty() {
+            return false;
+        }
+        if self.symbol_lib.trim().is_empty() || self.footprint_lib.trim().is_empty() {
+            return false;
+        }
+        validate_model_subdir(&self.model_subdir).is_ok()
+    }
+
     fn start_watching(&mut self) {
         let Some(settings) = self.build_settings(true) else {
             return;
@@ -332,6 +379,18 @@ impl MainApp {
         }
         self.log_rx = None;
         self.save_config();
+    }
+
+    /// Keeps the tray menu's single start/stop item in sync with
+    /// current state — called once per frame from `update`. See
+    /// `tray::set_state`'s docs for why non-Linux applies the change
+    /// directly to `tray_toggle_item` here while Linux only updates a
+    /// couple of atomics for its GTK-thread poll to pick up.
+    fn sync_tray_toggle(&self, watching: bool, can_start: bool) {
+        tray::set_state(watching, can_start);
+        if let Some(item) = &self.tray_toggle_item {
+            tray::apply_toggle_state(item, watching, can_start);
+        }
     }
 
     fn drain_log_channel(&mut self) {
@@ -379,8 +438,13 @@ impl MainApp {
         while let Ok(event) = tray_icon::menu::MenuEvent::receiver().try_recv() {
             match event.id.as_ref() {
                 tray::MENU_SHOW => Self::show_and_focus(ctx),
-                tray::MENU_START if self.watcher.is_none() => self.start_watching(),
-                tray::MENU_STOP if self.watcher.is_some() => self.stop_watching(),
+                tray::MENU_TOGGLE => {
+                    if self.watcher.is_some() {
+                        self.stop_watching();
+                    } else if self.can_start_watching() {
+                        self.start_watching();
+                    }
+                }
                 tray::MENU_QUIT => {
                     self.force_quit = true;
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -460,6 +524,7 @@ impl MainApp {
             let dir = path.parent().map(|p| p.to_path_buf()).unwrap_or(path);
             self.project_path = dir.to_string_lossy().to_string();
             self.load_config_for_current_project();
+            self.save_global_settings();
         }
     }
 
@@ -612,6 +677,10 @@ impl eframe::App for MainApp {
         // otherwise nudge the event loop into calling `update` again.
         ctx.request_repaint_after(std::time::Duration::from_millis(250));
 
+        let watching = self.watcher.is_some();
+        let can_start = self.can_start_watching();
+        self.sync_tray_toggle(watching, can_start);
+
         if ctx.input(|i| i.viewport().close_requested()) && !self.force_quit {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
@@ -638,7 +707,6 @@ impl eframe::App for MainApp {
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        let watching = self.watcher.is_some();
                         ui.horizontal(|ui| {
                             ui.label(
                                 RichText::new(if watching {
@@ -757,10 +825,22 @@ impl eframe::App for MainApp {
                                         .stroke(Stroke::new(1.0_f32, DANGER)),
                                 )
                             } else {
-                                ui.add_sized(
-                                    toggle_size,
-                                    theme::accent_button(format!("{}  Start Watching", icon::PLAY)),
-                                )
+                                // Grayed out (via `add_enabled_ui`, since
+                                // `add_sized` has no enabled-aware
+                                // counterpart) whenever `start_watching`
+                                // would just immediately fail anyway —
+                                // no project chosen, a library path
+                                // missing, etc. (see `can_start_watching`).
+                                ui.add_enabled_ui(can_start, |ui| {
+                                    ui.add_sized(
+                                        toggle_size,
+                                        theme::accent_button(format!(
+                                            "{}  Start Watching",
+                                            icon::PLAY
+                                        )),
+                                    )
+                                })
+                                .inner
                             };
                             if toggle_resp.clicked() {
                                 if watching {

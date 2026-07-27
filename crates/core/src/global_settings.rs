@@ -1,17 +1,23 @@
-//! Global (not per-project) app settings — currently just the
-//! Mouser/DigiKey API credentials (see `crate::parts_lookup`).
+//! Global (not per-project) app settings: the Mouser/DigiKey API
+//! credentials (see `crate::parts_lookup`), and the last-opened
+//! project's directory so the app can reopen it automatically on
+//! startup — every other per-project setting (watch folder, libraries,
+//! options) already lives in that project's own `ImporterConfig`
+//! (`.kicad-autoimport-cfg.json`), so remembering just the *path* is
+//! enough to restore the whole session.
 //!
 //! Deliberately separate from `config.rs`'s `ImporterConfig`: that one
 //! is explicitly, by design, project-scoped (see its module docs) with
-//! no global fallback location, because every one of its fields only
-//! makes sense in the context of a specific KiCad project. An API
+//! no global fallback location, because every one of its other fields
+//! only makes sense in the context of a specific KiCad project. An API
 //! key/client ID/secret is an account-level credential that has nothing
-//! to do with any one project, so it lives in its own file in a genuine
-//! global location instead — `dirs::config_dir()` (`~/.config` on
-//! Linux, `~/Library/Application Support` on macOS, `%APPDATA%` on
-//! Windows), the same crate already used elsewhere in this codebase for
-//! platform-appropriate directory discovery (see
-//! `kicad_paths::candidate_kicad_config_dirs`).
+//! to do with any one project, and "which project was open last" is a
+//! property of the *app*, not of any project's own config file, so both
+//! live in their own file in a genuine global location instead —
+//! `dirs::config_dir()` (`~/.config` on Linux, `~/Library/Application
+//! Support` on macOS, `%APPDATA%` on Windows), the same crate already
+//! used elsewhere in this codebase for platform-appropriate directory
+//! discovery (see `kicad_paths::candidate_kicad_config_dirs`).
 
 use std::fs;
 use std::path::PathBuf;
@@ -28,6 +34,11 @@ pub struct GlobalSettings {
     pub digikey_client_id: String,
     #[serde(default)]
     pub digikey_client_secret: String,
+    /// Absolute path to the last project directory that was open, or
+    /// `""` if none has been chosen yet. Restored on startup by
+    /// `MainApp::new` — see the module docs above.
+    #[serde(default)]
+    pub last_project_path: String,
 }
 
 impl GlobalSettings {
@@ -81,6 +92,7 @@ mod tests {
         assert_eq!(settings.mouser_api_key, "");
         assert_eq!(settings.digikey_client_id, "");
         assert_eq!(settings.digikey_client_secret, "");
+        assert_eq!(settings.last_project_path, "");
     }
 
     #[test]
@@ -89,6 +101,7 @@ mod tests {
             mouser_api_key: "some-mouser-key".to_string(),
             digikey_client_id: "some-client-id".to_string(),
             digikey_client_secret: "some-client-secret".to_string(),
+            last_project_path: "/home/user/my-project".to_string(),
         };
         let text = serde_json::to_string_pretty(&settings).unwrap();
         let loaded: GlobalSettings = serde_json::from_str(&text).unwrap();

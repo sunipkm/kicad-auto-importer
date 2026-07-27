@@ -80,10 +80,13 @@ fn main() -> eframe::Result<()> {
         Box::new(|cc| {
             theme::install(&cc.egui_ctx);
             #[cfg(not(target_os = "linux"))]
-            let tray_icon = tray::build();
+            let (tray_icon, tray_toggle_item) = match tray::build() {
+                Some((icon, item)) => (Some(icon), Some(item)),
+                None => (None, None),
+            };
             #[cfg(target_os = "linux")]
-            let tray_icon = None;
-            Ok(Box::new(MainApp::new(wake_rx, tray_icon)))
+            let (tray_icon, tray_toggle_item) = (None, None);
+            Ok(Box::new(MainApp::new(wake_rx, tray_icon, tray_toggle_item)))
         }),
     )
 }
