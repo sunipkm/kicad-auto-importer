@@ -7,6 +7,7 @@ version = "0.0.1"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/sunipkm/kicad-auto-importer"
+authors = ["Sunip K. Mukherjee <sunipkmukherjee@gmail.com>"]
 
 # A path dependency needs a `version` too, or `cargo publish` refuses to
 # package whichever crate depends on it (there's nothing for the

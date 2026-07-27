@@ -4,11 +4,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+authors.workspace = true
 description = "Desktop GUI that watches a folder for KiCad part-provider downloads (UltraLibrarian/Mouser/DigiKey) and imports them into your project's libraries automatically."
 readme = "../../README.md"
 keywords = ["kicad", "eda", "gui", "footprint", "importer"]
 categories = ["gui", "development-tools"]
-authors = ["Sunip K. Mukherjee <sunipkmukherjee@gmail.com>"]
 
 [dependencies]
 kicad-auto-importer-core.workspace = true

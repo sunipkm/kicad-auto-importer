@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+authors.workspace = true
 description = "GUI-free import pipeline for KiCad symbol/footprint libraries: S-expression parsing, sym-lib-table/fp-lib-table handling, and part-provider ZIP/folder import."
 readme = "../../README.md"
 keywords = ["kicad", "eda", "electronics", "footprint", "schematic"]
