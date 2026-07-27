@@ -13,6 +13,10 @@ libraries — registering the destination symbol and footprint libraries
 in that project's `sym-lib-table` / `fp-lib-table` so KiCad picks them
 up automatically.
 
+Additionally, it supports loading the project-specific symbols from
+another KiCad project, and copy them over (with footprints and 3D
+models) to the project-specific libraries of the working project.
+
 This tool does not depend on KiCad — it's a single
 native binary with its own GUI that you run alongside KiCad, or leave
 running in the background to import new parts as they land in your
@@ -29,6 +33,8 @@ downloads folder.
 - Optional move-after-import and timestamped backups of the source ZIP.
 - Single self-contained binary — no KiCad, Python, or runtime
   dependencies to install.
+- Import symbols and footprints from project-specific libraries of other
+  KiCad projects.
 
 ## Installation
 

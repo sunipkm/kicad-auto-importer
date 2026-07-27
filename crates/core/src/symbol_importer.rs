@@ -100,6 +100,15 @@ impl SymbolLibrary {
         self.symbols.iter().map(|s| s.name.as_str())
     }
 
+    /// Parses and returns just the named symbol's subtree, for callers
+    /// that need to inspect or deep-copy it (e.g. cross-project cherry
+    /// picking) — the shallow top-level scan above never builds this,
+    /// so this re-parses only that one symbol's byte span on demand.
+    pub fn get_symbol_node(&self, name: &str) -> Option<SexpNode> {
+        let span = self.symbols.iter().find(|s| s.name == name)?;
+        sexp::parse(&self.source[span.start..span.end]).ok()
+    }
+
     /// Adds a symbol whose subtree is `node` (already patched, e.g. via
     /// `patch_symbol_footprint`). Returns `false` (no-op) if `name`
     /// already exists in the destination and `overwrite` is false.

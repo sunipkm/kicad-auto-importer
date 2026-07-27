@@ -6,16 +6,19 @@
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
-use egui::{Color32, RichText, Rounding, Stroke};
+use egui::{Color32, RichText, Stroke};
 use egui_phosphor::regular as icon;
 use kicad_auto_importer_core::config::ImporterConfig;
 use kicad_auto_importer_core::kicad_paths::{expand_kicad_vars, kiprjmod_relative_uri};
+use kicad_auto_importer_core::library_import::CrossImportSettings;
 use kicad_auto_importer_core::watcher::{FolderWatcher, WatchEvent};
 use kicad_auto_importer_core::zip_importer::{
     import_folder, import_zip, validate_model_subdir, ImportSettings,
 };
 
+use crate::library_import_ui::{self, LibraryImportState};
 use crate::theme::{self, ACCENT, DANGER, TITLE_BAR_BG};
+use crate::window_chrome;
 
 pub struct MainApp {
     project_path: String, // absolute path to the project directory, or "" if none chosen yet
@@ -31,6 +34,8 @@ pub struct MainApp {
     log_rx: Option<mpsc::Receiver<WatchEvent>>,
     log_lines: Vec<String>,
     status: String,
+
+    library_import: LibraryImportState,
 }
 
 impl Default for MainApp {
@@ -48,6 +53,7 @@ impl Default for MainApp {
             log_rx: None,
             log_lines: Vec::new(),
             status: String::new(),
+            library_import: LibraryImportState::default(),
         }
     }
 }
@@ -251,6 +257,18 @@ impl MainApp {
         self.save_config();
     }
 
+    /// Validates and saves the destination settings first (same pattern
+    /// as every other import action here), then opens the cherry-pick
+    /// dialog — mirrors the Python plugin's `_import_from_library`, which
+    /// does the same before showing its `ImportLibraryDialog`.
+    fn open_library_import(&mut self) {
+        if self.build_settings(false).is_none() {
+            return;
+        }
+        self.save_config();
+        self.library_import.open = true;
+    }
+
     fn browse_project(&mut self) {
         if let Some(path) = rfd::FileDialog::new()
             .add_filter("KiCad project", &["kicad_pro"])
@@ -269,9 +287,18 @@ impl MainApp {
     }
 
     fn browse_symbol_lib(&mut self) {
+        // Deliberately `pick_file`, not `save_file`: this dialog is for
+        // *selecting* the destination library, which the import pipeline
+        // opens with `SymbolLibrary::open_or_create` and only ever
+        // appends/patches into — never replaces wholesale. `save_file`
+        // would pop the OS's native "this file already exists, overwrite?"
+        // confirmation for the ordinary case of pointing at a library you
+        // already have, which is misleading (nothing gets overwritten) and
+        // scary for no reason. A not-yet-created library name can still be
+        // typed directly into the (editable) field next to this button.
         if let Some(path) = rfd::FileDialog::new()
             .add_filter("KiCad symbol library", &["kicad_sym"])
-            .save_file()
+            .pick_file()
         {
             self.symbol_lib = self.to_display(&path);
         }
@@ -328,93 +355,6 @@ fn path_row(
     clicked
 }
 
-/// The custom, undecorated title bar: app icon + name on the left,
-/// a draggable middle region, and minimize/maximize/close buttons on
-/// the right. Drawn in place of the native OS title bar since the
-/// window is created with `with_decorations(false)`.
-fn title_bar(ui: &mut egui::Ui, ctx: &egui::Context) {
-    let bar_height = 40.0;
-
-    ui.horizontal(|ui| {
-        ui.set_height(bar_height);
-        // Window-chrome rows are laid out with exact pixel math (drag
-        // region width, flush-together buttons), so the automatic
-        // inter-widget spacing egui would otherwise insert has to be
-        // switched off — it would silently push the close button past
-        // the edge of the window and clip it.
-        ui.spacing_mut().item_spacing.x = 0.0;
-
-        ui.add_space(10.0);
-        ui.label(RichText::new(icon::CIRCUITRY).size(20.0).color(ACCENT));
-        ui.add_space(6.0);
-        ui.label(RichText::new("KiCad Auto Importer").strong().size(15.0));
-
-        // Window control buttons, drawn right-to-left so we can measure
-        // how much space they take before laying out the drag region.
-        let button_size = egui::vec2(bar_height, bar_height);
-        let controls_width = button_size.x * 3.0;
-        let drag_width = (ui.available_width() - controls_width).max(0.0);
-
-        let (drag_rect, drag_resp) =
-            ui.allocate_exact_size(egui::vec2(drag_width, bar_height), egui::Sense::click());
-        let drag_resp = ui.interact(drag_rect, drag_resp.id, egui::Sense::drag());
-        if drag_resp.drag_started() {
-            ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
-        }
-        if drag_resp.double_clicked() {
-            let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
-            ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
-        }
-
-        if title_bar_button(ui, icon::MINUS, button_size).clicked() {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
-        }
-        let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
-        let maximize_icon = if maximized {
-            icon::CORNERS_IN
-        } else {
-            icon::SQUARE
-        };
-        if title_bar_button(ui, maximize_icon, button_size).clicked() {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
-        }
-        if title_bar_button_colored(ui, icon::X, button_size, DANGER).clicked() {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-        }
-    });
-}
-
-fn title_bar_button(ui: &mut egui::Ui, glyph: &str, size: egui::Vec2) -> egui::Response {
-    title_bar_button_colored(ui, glyph, size, Color32::from_gray(220))
-}
-
-fn title_bar_button_colored(
-    ui: &mut egui::Ui,
-    glyph: &str,
-    size: egui::Vec2,
-    hover_color: Color32,
-) -> egui::Response {
-    let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
-    let visuals = ui.style().interact(&resp);
-    if resp.hovered() {
-        ui.painter()
-            .rect_filled(rect, Rounding::ZERO, visuals.bg_fill);
-    }
-    let color = if resp.hovered() {
-        hover_color
-    } else {
-        Color32::from_gray(190)
-    };
-    ui.painter().text(
-        rect.center(),
-        egui::Align2::CENTER_CENTER,
-        glyph,
-        egui::FontId::proportional(15.0),
-        color,
-    );
-    resp
-}
-
 impl eframe::App for MainApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.drain_log_channel();
@@ -423,10 +363,12 @@ impl eframe::App for MainApp {
         }
 
         egui::TopBottomPanel::top("title_bar")
-            .exact_height(40.0)
+            .exact_height(window_chrome::BAR_HEIGHT)
             .frame(egui::Frame::none().fill(TITLE_BAR_BG))
             .show_separator_line(false)
-            .show(ctx, |ui| title_bar(ui, ctx));
+            .show(ctx, |ui| {
+                window_chrome::title_bar(ui, ctx, "KiCad Auto Importer")
+            });
 
         let panel_frame = egui::Frame::central_panel(&ctx.style())
             .inner_margin(egui::Margin::symmetric(16.0, 14.0));
@@ -581,6 +523,18 @@ impl eframe::App for MainApp {
                             {
                                 self.import_folder_dialog();
                             }
+                            if ui
+                                .add_sized(
+                                    action_size,
+                                    egui::Button::new(format!(
+                                        "{}  Another Project\u{2026}",
+                                        icon::LINK_SIMPLE
+                                    )),
+                                )
+                                .clicked()
+                            {
+                                self.open_library_import();
+                            }
                         });
 
                         if !self.status.is_empty() {
@@ -644,37 +598,21 @@ impl eframe::App for MainApp {
                     });
             });
 
-        resize_grip(ctx);
+        if self.library_import.open {
+            let dest_settings = CrossImportSettings {
+                symbol_lib: self.to_absolute(&self.symbol_lib),
+                footprint_lib: self.to_absolute(&self.footprint_lib),
+                project_path: self.project_dir().unwrap_or_default(),
+                model_subdir: self.model_subdir.clone(),
+                overwrite: self.overwrite,
+            };
+            library_import_ui::show(&mut self.library_import, ctx, &dest_settings);
+        }
+
+        window_chrome::resize_grip(ctx, "main");
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.stop_watching();
     }
-}
-
-/// A small drag handle in the bottom-right corner that lets the user
-/// resize the window — necessary because `with_decorations(false)`
-/// removes the OS-provided resize border along with the title bar.
-fn resize_grip(ctx: &egui::Context) {
-    egui::Area::new(egui::Id::new("resize_grip"))
-        .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-2.0, -2.0))
-        .interactable(true)
-        .show(ctx, |ui| {
-            let (rect, resp) = ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::drag());
-            ui.painter().text(
-                rect.center(),
-                egui::Align2::CENTER_CENTER,
-                icon::DOTS_SIX,
-                egui::FontId::proportional(14.0),
-                Color32::from_gray(140),
-            );
-            if resp.hovered() {
-                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeNwSe);
-            }
-            if resp.drag_started() {
-                ctx.send_viewport_cmd(egui::ViewportCommand::BeginResize(
-                    egui::ResizeDirection::SouthEast,
-                ));
-            }
-        });
 }

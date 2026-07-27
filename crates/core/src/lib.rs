@@ -7,6 +7,7 @@
 pub mod config;
 pub mod footprint_importer;
 pub mod kicad_paths;
+pub mod library_import;
 pub mod model_importer;
 pub mod sexp;
 pub mod symbol_importer;

@@ -22,7 +22,7 @@ use regex::Regex;
 
 use crate::kicad_paths::kiprjmod_relative_uri;
 
-fn model_path_re() -> &'static Regex {
+pub(crate) fn model_path_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(r#"(\(model\s+)"((?:[^"\\]|\\.)*)""#).unwrap())
 }
