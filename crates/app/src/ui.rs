@@ -306,7 +306,7 @@ impl MainApp {
 
     fn browse_footprint_lib(&mut self) {
         if let Some(mut path) = rfd::FileDialog::new().pick_folder() {
-            if !path.extension().is_some_and(|e| e == "pretty") {
+            if path.extension().is_none_or(|e| e != "pretty") {
                 path.set_extension("pretty");
             }
             self.footprint_lib = self.to_display(&path);
