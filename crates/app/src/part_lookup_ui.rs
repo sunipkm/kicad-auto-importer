@@ -1,29 +1,29 @@
-//! "Populate BOM" — annotate every symbol registered anywhere in the
-//! current project (not just the one destination library this app
-//! manages) with manufacturer and Mouser/DigiKey distributor info (see
+//! "Populate BOM" — annotate every symbol actually *placed* on the
+//! current project's schematic (root sheet plus every hierarchical
+//! sub-sheet, deduplicated by reference designator) with manufacturer
+//! and Mouser/DigiKey distributor info (see
 //! `kicad_auto_importer_core::parts_lookup`).
 //!
-//! "Every symbol in the project" means every symbol in every library
-//! listed in the project's own *local* `sym-lib-table` — via
-//! `library_import::load_project_symbols`, the exact same project-wide
-//! scan `library_import_ui`'s cherry-pick dialog already uses for a
-//! *source* project, just pointed at the current one instead. This is
-//! deliberately not a schematic/BOM-instance parse (i.e. not "every
-//! symbol actually placed on a sheet, deduplicated by reference
-//! designator") — no `.kicad_sch` parsing exists in this codebase, and
-//! sym-lib-table scanning already gives the intended safety property for
-//! free: it only ever touches libraries the project itself registered
-//! locally, never KiCad's global/system libraries (see
-//! `load_project_local_table`'s own docs).
+//! Row discovery is `kicad_auto_importer_core::schematic`'s job — see
+//! that module's docs for why this covers the *whole* schematic (not
+//! just symbols defined in the project's own local libraries the way an
+//! earlier version of this feature did) and, just as importantly, why
+//! looked-up vendor info is written back onto each placed *instance*
+//! (keyed by its schematic uuid) rather than into the shared library
+//! symbol it came from: a generic `Device:R` is reused by every
+//! resistor in the design regardless of value, so patching the library
+//! symbol would clobber it for all of them (and for a global/stock
+//! library, would corrupt a file KiCad shares across every project on
+//! the machine).
 //!
-//! Structurally a near-copy of `library_import_ui.rs`: a genuine second
-//! OS window (`show_viewport_immediate`, not a floating `egui::Window` —
-//! see that file's docs for why), the same table/checkbox/log-pane
-//! layout. Since rows can now come from more than one library file,
-//! `run_lookup_batch` groups selected rows by their own `sym_lib_path`
-//! and opens/patches/saves each library once, rather than assuming a
-//! single destination file the way the first version of this feature
-//! did.
+//! Structurally still a near-copy of `library_import_ui.rs`: a genuine
+//! second OS window (`show_viewport_immediate`, not a floating
+//! `egui::Window` — see that file's docs for why), the same
+//! table/checkbox/log-pane layout, including its wrapped multi-line
+//! table rows. Since rows can come from more than one schematic file
+//! (root plus sub-sheets), `run_lookup_batch` groups selected rows by
+//! their own `sch_path` and opens/patches/saves each schematic file
+//! once, rather than assuming everything lives in one file.
 //!
 //! The lookups themselves run on a plain background `std::thread` (this
 //! app's established pattern for anything that shouldn't block the GUI
@@ -41,9 +41,9 @@ use egui::{Color32, RichText};
 use egui_extras::{Column, TableBuilder};
 use egui_phosphor::regular as icon;
 
-use kicad_auto_importer_core::library_import::{load_project_symbols, SourceSymbol};
+use kicad_auto_importer_core::bom_report::{self, ReportRow};
 use kicad_auto_importer_core::parts_lookup::{self, PartsCredentials};
-use kicad_auto_importer_core::symbol_importer::SymbolLibrary;
+use kicad_auto_importer_core::schematic::{self, PlacedSymbol, SchematicFile};
 
 use crate::theme::{self, ACCENT, DANGER, OK};
 
@@ -52,31 +52,38 @@ enum LookupEvent {
     RowResult {
         index: usize,
         ok: bool,
+        needs_attention: bool,
         summary: String,
     },
     Done,
 }
 
 /// What a single row's last lookup found — shown in the table's Result
-/// column and kept until the next reload or batch.
+/// column and kept until the next reload or batch. `needs_attention` is
+/// only meaningful when `ok` is true (a found part that's either not
+/// confirmed in stock or flagged obsolete/EOL/NRND by some vendor); a
+/// failed lookup is already flagged by `ok` alone.
 struct RowResult {
     ok: bool,
+    needs_attention: bool,
     summary: String,
 }
 
 /// A checked row, snapshotted at the moment "Populate BOM" is clicked —
-/// owns its own `sym_lib_path` (from `SourceSymbol`) since rows can now
-/// come from any of the project's registered libraries, not just one.
+/// owns its own `sch_path`/`uuid` (from `PlacedSymbol`) since rows can
+/// come from any schematic file in the hierarchy, not just the root one.
 struct SelectedRow {
     index: usize,
-    name: String,
-    sym_lib_path: PathBuf,
+    reference: String,
+    lib_id: String,
+    sch_path: PathBuf,
+    uuid: String,
 }
 
 #[derive(Default)]
 pub struct PartLookupState {
     pub open: bool,
-    rows: Vec<SourceSymbol>,
+    rows: Vec<PlacedSymbol>,
     /// The project dir `rows` was last loaded from — reload
     /// automatically if the window is (re)opened pointing somewhere
     /// else, e.g. after switching projects.
@@ -105,7 +112,7 @@ impl PartLookupState {
 
     fn load_from(&mut self, project_dir: &Path) {
         let mut lines = Vec::new();
-        self.rows = load_project_symbols(project_dir, |m| lines.push(m.to_string()));
+        self.rows = schematic::load_schematic_symbols(project_dir, |m| lines.push(m.to_string()));
         for line in lines {
             self.log(line);
         }
@@ -116,7 +123,7 @@ impl PartLookupState {
         self.progress_total = 0;
         self.loaded_from = Some(project_dir.to_path_buf());
         self.log(format!(
-            "Found {} symbol(s) across the project's registered libraries.",
+            "Found {} symbol(s) placed on the schematic.",
             self.rows.len()
         ));
     }
@@ -150,8 +157,13 @@ impl PartLookupState {
             while let Ok(event) = rx.try_recv() {
                 match event {
                     LookupEvent::Log(msg) => lines.push(msg),
-                    LookupEvent::RowResult { index, ok, summary } => {
-                        results.push((index, ok, summary));
+                    LookupEvent::RowResult {
+                        index,
+                        ok,
+                        needs_attention,
+                        summary,
+                    } => {
+                        results.push((index, ok, needs_attention, summary));
                     }
                     LookupEvent::Done => done = true,
                 }
@@ -160,9 +172,16 @@ impl PartLookupState {
         for line in lines {
             self.log(line);
         }
-        for (index, ok, summary) in results {
+        for (index, ok, needs_attention, summary) in results {
             self.progress_done += 1;
-            self.results.insert(index, RowResult { ok, summary });
+            self.results.insert(
+                index,
+                RowResult {
+                    ok,
+                    needs_attention,
+                    summary,
+                },
+            );
         }
         if done {
             self.in_progress = false;
@@ -170,7 +189,7 @@ impl PartLookupState {
         }
     }
 
-    fn look_up_selected(&mut self, credentials: PartsCredentials) {
+    fn look_up_selected(&mut self, project_dir: &Path, credentials: PartsCredentials) {
         if self.checked.is_empty() {
             self.status = "Select at least one symbol first.".to_string();
             return;
@@ -191,8 +210,10 @@ impl PartLookupState {
             .filter(|(i, _)| self.checked.contains(i))
             .map(|(index, row)| SelectedRow {
                 index,
-                name: row.name.clone(),
-                sym_lib_path: row.sym_lib_path.clone(),
+                reference: row.reference.clone(),
+                lib_id: row.lib_id.clone(),
+                sch_path: row.sch_path.clone(),
+                uuid: row.uuid.clone(),
             })
             .collect();
 
@@ -203,105 +224,135 @@ impl PartLookupState {
         self.rx = Some(rx);
         self.in_progress = true;
 
+        let project_dir = project_dir.to_path_buf();
         thread::Builder::new()
             .name("part-lookup".into())
-            .spawn(move || run_lookup_batch(selected, credentials, tx))
+            .spawn(move || run_lookup_batch(selected, project_dir, credentials, tx))
             .expect("failed to spawn the part-lookup thread");
     }
 }
 
 /// Runs on the background thread spawned by `look_up_selected`. Groups
-/// the selected rows by which library they actually live in and opens
-/// each library once (not per-symbol), saving once per library at the
+/// the selected rows by which schematic file they actually live in and
+/// opens each file once (not per-symbol), saving once per file at the
 /// end — same batching `library_import::import_symbols` uses for its
 /// own destination library, and for the same reason: cheap, and avoids
 /// re-reading/re-writing a whole file for every single row in it.
 fn run_lookup_batch(
     selected: Vec<SelectedRow>,
+    project_dir: PathBuf,
     credentials: PartsCredentials,
     tx: mpsc::Sender<LookupEvent>,
 ) {
     let send_log = |msg: String| {
         let _ = tx.send(LookupEvent::Log(msg));
     };
-    let send_result = |index: usize, ok: bool, summary: String| {
-        let _ = tx.send(LookupEvent::RowResult { index, ok, summary });
+    let send_result = |index: usize, ok: bool, needs_attention: bool, summary: String| {
+        let _ = tx.send(LookupEvent::RowResult {
+            index,
+            ok,
+            needs_attention,
+            summary,
+        });
     };
 
-    let mut by_library: HashMap<PathBuf, Vec<SelectedRow>> = HashMap::new();
+    // Keyed by the row's original index (not push order) so the report
+    // below can be emitted in the same natural-reference order the
+    // table itself uses, regardless of which schematic-file group a row
+    // happened to land in.
+    let mut report_rows: HashMap<usize, ReportRow> = HashMap::new();
+
+    let mut by_file: HashMap<PathBuf, Vec<SelectedRow>> = HashMap::new();
     for row in selected {
-        by_library
-            .entry(row.sym_lib_path.clone())
-            .or_default()
-            .push(row);
+        by_file.entry(row.sch_path.clone()).or_default().push(row);
     }
 
     let mut ok_count = 0usize;
     let mut err_count = 0usize;
 
-    for (path, rows) in by_library {
-        let mut lib = match SymbolLibrary::open(&path) {
-            Ok(lib) => lib,
+    for (path, rows) in by_file {
+        let mut sch = match SchematicFile::open(&path) {
+            Ok(sch) => sch,
             Err(exc) => {
                 send_log(format!(
                     "\u{2718} Could not open '{}': {exc}",
                     path.display()
                 ));
                 for row in &rows {
-                    send_result(row.index, false, format!("could not open library: {exc}"));
+                    let msg = format!("could not open schematic: {exc}");
+                    send_result(row.index, false, false, msg.clone());
+                    report_rows.insert(row.index, report_row(row, Err(msg)));
                     err_count += 1;
                 }
                 continue;
             }
         };
 
-        let mut any_ok = false;
         for row in &rows {
-            let Some(mut node) = lib.get_symbol_node(&row.name) else {
+            let Some(mut node) = sch.get_symbol_node(&row.uuid) else {
                 send_log(format!(
-                    "\u{2718} '{}': no longer in the library, skipped.",
-                    row.name
+                    "\u{2718} '{}': no longer on the schematic, skipped.",
+                    row.reference
                 ));
-                send_result(row.index, false, "no longer in library".to_string());
+                let msg = "no longer on schematic".to_string();
+                send_result(row.index, false, false, msg.clone());
+                report_rows.insert(row.index, report_row(row, Err(msg)));
                 err_count += 1;
                 continue;
             };
-            let mpn = parts_lookup::resolve_mpn(&node, &row.name);
-            send_log(format!("Looking up '{}' (as '{mpn}')\u{2026}", row.name));
+            let symbol_name = row
+                .lib_id
+                .split_once(':')
+                .map_or(row.lib_id.as_str(), |(_, name)| name);
+            let mpn = parts_lookup::resolve_mpn(&node, symbol_name);
+            send_log(format!(
+                "Looking up '{}' ({}, as '{mpn}')\u{2026}",
+                row.reference, row.lib_id
+            ));
 
             match parts_lookup::lookup_part_info(&credentials, &mpn) {
                 Ok(info) => {
                     let vendors: Vec<&str> =
                         info.offers.iter().map(|o| o.seller.as_str()).collect();
                     for warning in &info.warnings {
-                        send_log(format!("  \u{26a0} '{}': {warning}", row.name));
+                        send_log(format!("  \u{26a0} '{}': {warning}", row.reference));
                     }
                     parts_lookup::apply_part_info(&mut node, &info);
-                    lib.add_symbol(&row.name, &node, true);
+                    sch.patch_symbol(&row.uuid, &node);
+                    let in_stock = info.in_stock();
+                    let lifecycle_concern = info.lifecycle_concern();
+                    let mut flags = String::new();
+                    if !in_stock {
+                        flags.push_str(" (NOT IN STOCK)");
+                    }
+                    if lifecycle_concern {
+                        flags.push_str(" (OBSOLETE/EOL)");
+                    }
                     let summary = format!(
-                        "{} \u{2014} {}",
+                        "{} \u{2014} {}{flags}",
                         info.manufacturer,
                         if vendors.is_empty() {
                             "no Mouser/DigiKey offers found".to_string()
                         } else {
                             vendors.join(", ")
-                        }
+                        },
                     );
-                    send_log(format!("\u{2714} '{}': {summary}", row.name));
-                    send_result(row.index, true, summary);
+                    send_log(format!("\u{2714} '{}': {summary}", row.reference));
+                    send_result(row.index, true, !in_stock || lifecycle_concern, summary);
+                    report_rows.insert(row.index, report_row(row, Ok(info)));
                     ok_count += 1;
-                    any_ok = true;
                 }
                 Err(exc) => {
-                    send_log(format!("\u{2718} '{}': {exc}", row.name));
-                    send_result(row.index, false, exc.to_string());
+                    send_log(format!("\u{2718} '{}': {exc}", row.reference));
+                    send_result(row.index, false, false, exc.to_string());
+                    report_rows.insert(row.index, report_row(row, Err(exc.to_string())));
                     err_count += 1;
                 }
             }
         }
 
-        if any_ok {
-            if let Err(exc) = lib.save() {
+        if sch.has_pending_changes() {
+            if let Err(exc) = sch.save() {
                 send_log(format!(
                     "\u{2718} Could not save '{}': {exc}",
                     path.display()
@@ -311,7 +362,78 @@ fn run_lookup_batch(
     }
 
     send_log(format!("Done: {ok_count} updated, {err_count} error(s)."));
+    save_stock_report(&project_dir, report_rows, &send_log);
     let _ = tx.send(LookupEvent::Done);
+}
+
+fn report_row(row: &SelectedRow, outcome: Result<parts_lookup::PartInfo, String>) -> ReportRow {
+    let symbol_name = row
+        .lib_id
+        .split_once(':')
+        .map_or(row.lib_id.as_str(), |(_, name)| name);
+    ReportRow {
+        reference: row.reference.clone(),
+        symbol: symbol_name.to_string(),
+        outcome,
+    }
+}
+
+/// Renders the batch's PDF stock report to
+/// `<project_dir>/bom_stock_report.pdf` (overwritten each run — the
+/// report is a point-in-time snapshot of *this* batch, not a history),
+/// in the same natural-reference order the table itself shows.
+fn save_stock_report(
+    project_dir: &Path,
+    report_rows: HashMap<usize, ReportRow>,
+    send_log: &impl Fn(String),
+) {
+    let mut ordered: Vec<(usize, ReportRow)> = report_rows.into_iter().collect();
+    ordered.sort_by_key(|(i, _)| *i);
+    let rows: Vec<ReportRow> = ordered.into_iter().map(|(_, r)| r).collect();
+
+    let project_name = project_dir
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| project_dir.display().to_string());
+    let unix_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let generated_at = bom_report::format_utc_timestamp(unix_secs);
+    let out_path = project_dir.join("bom_stock_report.pdf");
+
+    match bom_report::generate(&rows, &project_name, &generated_at, &out_path) {
+        Ok(()) => send_log(format!("Stock report saved to '{}'.", out_path.display())),
+        Err(exc) => send_log(format!(
+            "\u{2718} Could not generate PDF stock report: {exc}"
+        )),
+    }
+}
+
+/// Sizes a table row tall enough to show wrapped multi-line Description
+/// and Result text instead of clipping either to one line — same
+/// technique as `library_import_ui::description_row_height` (measures
+/// the real wrapped galley rather than guessing from a
+/// characters-per-line constant), applied to both columns and capped
+/// per-column, with the row taking whichever of the two needs more
+/// height.
+fn row_height(ctx: &egui::Context, description: &str, result: &str) -> f32 {
+    const MAX_LINES: usize = 4;
+    const DESCRIPTION_WRAP_WIDTH: f32 = 260.0 - 12.0;
+    // A little narrower than the Result column's own width to leave
+    // room for the leading status glyph drawn before the text.
+    const RESULT_WRAP_WIDTH: f32 = 320.0 - 12.0 - 20.0;
+
+    let font_id = egui::TextStyle::Body.resolve(&ctx.style());
+    let measure = |text: &str, wrap_width: f32| -> f32 {
+        let galley =
+            ctx.fonts(|f| f.layout_delayed_color(text.to_owned(), font_id.clone(), wrap_width));
+        let line_count = galley.rows.len().max(1);
+        let line_height = galley.rect.height() / line_count as f32;
+        line_height * line_count.min(MAX_LINES) as f32 + 8.0
+    };
+
+    measure(description, DESCRIPTION_WRAP_WIDTH).max(measure(result, RESULT_WRAP_WIDTH))
 }
 
 pub fn show(
@@ -338,7 +460,7 @@ pub fn show(
     let viewport_id = egui::ViewportId::from_hash_of("part_lookup_window");
     let builder = egui::ViewportBuilder::default()
         .with_title("Populate BOM")
-        .with_inner_size([900.0, 620.0])
+        .with_inner_size([980.0, 640.0])
         .with_min_inner_size([600.0, 400.0])
         .with_decorations(false)
         .with_icon(crate::icon::app_icon());
@@ -407,10 +529,18 @@ pub fn show(
             if state.progress_total > 0 {
                 ui.add_space(6.0);
                 let fraction = state.progress_done as f32 / state.progress_total as f32;
-                ui.add(
-                    egui::ProgressBar::new(fraction)
-                        .text(format!("{}/{}", state.progress_done, state.progress_total))
-                        .fill(ACCENT),
+                let resp = ui.add(egui::ProgressBar::new(fraction).fill(ACCENT));
+                // `ProgressBar::text` (egui 0.29) always left-aligns its
+                // text against the bar's edge rather than centering it —
+                // painting the done/total count ourselves, centered over
+                // the bar's own response rect, is the only way to get it
+                // in the middle.
+                ui.painter().text(
+                    resp.rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    format!("{}/{}", state.progress_done, state.progress_total),
+                    egui::FontId::proportional(13.0),
+                    Color32::WHITE,
                 );
             }
 
@@ -445,7 +575,7 @@ pub fn show(
                     .add_enabled(!state.in_progress, theme::accent_button(label))
                     .clicked();
                 if clicked {
-                    state.look_up_selected(credentials.clone());
+                    state.look_up_selected(project_dir, credentials.clone());
                 }
                 if ui.button("Close").clicked() {
                     state.open = false;
@@ -462,6 +592,19 @@ pub fn show(
                     .id_salt("part_lookup_table_hscroll")
                     .auto_shrink([false, true])
                     .show(ui, |ui| {
+                        let row_heights: Vec<f32> = state
+                            .rows
+                            .iter()
+                            .enumerate()
+                            .map(|(i, r)| {
+                                let result = state
+                                    .results
+                                    .get(&i)
+                                    .map(|r| r.summary.as_str())
+                                    .unwrap_or("");
+                                row_height(ctx, &r.description, result)
+                            })
+                            .collect();
                         TableBuilder::new(ui)
                             .id_salt("part_lookup_table")
                             .striped(true)
@@ -469,11 +612,11 @@ pub fn show(
                             .sense(egui::Sense::click())
                             .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
                             .column(Column::exact(24.0))
-                            .column(Column::initial(110.0).at_least(60.0).clip(true))
-                            .column(Column::initial(160.0).at_least(80.0).clip(true))
-                            .column(Column::initial(90.0).at_least(50.0).clip(true))
-                            .column(Column::initial(220.0).at_least(100.0).clip(true))
-                            .column(Column::remainder().at_least(160.0).clip(true))
+                            .column(Column::initial(140.0).at_least(80.0).clip(true))
+                            .column(Column::initial(140.0).at_least(70.0).clip(true))
+                            .column(Column::initial(80.0).at_least(50.0).clip(true))
+                            .column(Column::initial(260.0).at_least(120.0).clip(true))
+                            .column(Column::initial(320.0).at_least(160.0).clip(true))
                             .min_scrolled_height(0.0)
                             .max_scroll_height(table_height)
                             .header(24.0, |mut header| {
@@ -485,7 +628,7 @@ pub fn show(
                                     ui.strong("Symbol");
                                 });
                                 header.col(|ui| {
-                                    ui.strong("Type");
+                                    ui.strong("Reference");
                                 });
                                 header.col(|ui| {
                                     ui.strong("Description");
@@ -495,7 +638,7 @@ pub fn show(
                                 });
                             })
                             .body(|body| {
-                                body.rows(22.0, state.rows.len(), |mut row| {
+                                body.heterogeneous_rows(row_heights.into_iter(), |mut row| {
                                     let i = row.index();
                                     let checked = state.checked.contains(&i);
                                     row.set_selected(checked);
@@ -538,29 +681,29 @@ pub fn show(
                                     });
                                     let r = &state.rows[i];
                                     row.col(|ui| {
-                                        ui.label(&r.library);
+                                        ui.label(r.library());
                                     });
                                     row.col(|ui| {
-                                        ui.label(&r.name);
+                                        ui.label(r.symbol_name());
                                     });
                                     row.col(|ui| {
-                                        ui.label(&r.type_label);
+                                        ui.label(&r.reference);
                                     });
                                     row.col(|ui| {
-                                        ui.add(egui::Label::new(&r.description).truncate());
+                                        ui.add(egui::Label::new(&r.description).wrap());
                                     });
                                     row.col(|ui| {
                                         if let Some(result) = state.results.get(&i) {
-                                            let (glyph, color) = if result.ok {
-                                                (icon::CHECK_CIRCLE, OK)
-                                            } else {
+                                            let (glyph, color) = if !result.ok {
                                                 (icon::X_CIRCLE, DANGER)
+                                            } else if result.needs_attention {
+                                                (icon::WARNING_CIRCLE, DANGER)
+                                            } else {
+                                                (icon::CHECK_CIRCLE, OK)
                                             };
                                             ui.horizontal(|ui| {
                                                 ui.label(RichText::new(glyph).color(color));
-                                                ui.add(
-                                                    egui::Label::new(&result.summary).truncate(),
-                                                );
+                                                ui.add(egui::Label::new(&result.summary).wrap());
                                             });
                                         }
                                     });

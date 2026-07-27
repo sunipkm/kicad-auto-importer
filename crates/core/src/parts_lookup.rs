@@ -31,6 +31,18 @@ pub struct PartsCredentials {
     pub digikey_client_secret: String,
 }
 
+/// Whether a vendor reported a part as orderable right now — deliberately
+/// binary (no separate "unknown" state): a vendor that answered the
+/// lookup at all always states a quantity/availability one way or the
+/// other, and a vendor that *didn't* answer isn't represented as an
+/// offer in the first place (see [`VendorOffer`]), so "no offer" already
+/// means "not confirmed in stock" without needing a third state here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StockStatus {
+    InStock,
+    OutOfStock,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct VendorOffer {
     /// Display label: "Mouser" or "DigiKey".
@@ -39,6 +51,31 @@ pub struct VendorOffer {
     pub sku: String,
     /// e.g. `"1:$1.23 | 10:$1.05 | 100:$0.89"`.
     pub price_summary: String,
+    pub stock_status: StockStatus,
+    /// The vendor's own availability text, e.g. `"1,934 In Stock"` or
+    /// `"0 In Stock"` — kept verbatim (rather than reduced to just a
+    /// number) since it's the most legible thing to put in front of a
+    /// human on the BOM report.
+    pub stock_summary: String,
+    /// The vendor's own lifecycle status text, e.g. `"Active"`,
+    /// `"Obsolete"`, `"Not Recommended for New Designs"` — `"Unknown"`
+    /// if the vendor didn't report one for this part (common; both
+    /// vendors leave it blank/null far more often than they set it,
+    /// even for parts confirmed in stock). Kept verbatim rather than
+    /// collapsed to a boolean, same reasoning as `stock_summary`.
+    pub lifecycle_summary: String,
+    /// True only when `lifecycle_summary` matches a known
+    /// obsolete/EOL/NRND-type keyword (see [`is_lifecycle_concern`]) —
+    /// unlike stock, an *unknown* lifecycle is not itself a red flag
+    /// (most catalog entries simply don't carry this field), so this is
+    /// deliberately not derived from "did the vendor report anything."
+    pub lifecycle_concern: bool,
+    /// A vendor-suggested replacement part number, when the vendor
+    /// offers one (Mouser's `SuggestedReplacement` field, most relevant
+    /// alongside an `"Obsolete"`/`"NRND"` lifecycle status) — empty
+    /// when none was given. DigiKey has no equivalent field, so this is
+    /// always empty for a DigiKey offer.
+    pub suggested_replacement: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -52,6 +89,47 @@ pub struct PartInfo {
     /// Empty when every configured vendor succeeded (or only one vendor
     /// was configured and it succeeded).
     pub warnings: Vec<String>,
+}
+
+impl PartInfo {
+    /// True if *any* matched vendor reports the part as currently in
+    /// stock — what the "Populate BOM" table/log and the PDF stock
+    /// report both use to decide whether a part needs flagging.
+    pub fn in_stock(&self) -> bool {
+        self.offers
+            .iter()
+            .any(|o| o.stock_status == StockStatus::InStock)
+    }
+
+    /// True if *any* matched vendor flags the part as
+    /// obsolete/EOL/NRND/discontinued/last-time-buy.
+    pub fn lifecycle_concern(&self) -> bool {
+        self.offers.iter().any(|o| o.lifecycle_concern)
+    }
+}
+
+/// Case-insensitive keyword match against a vendor's own lifecycle
+/// status text — shared by `mouser`/`digikey` rather than hard-coding
+/// each vendor's exact enum of status strings (neither vendor documents
+/// a closed set, e.g. DigiKey alone has been seen using "Obsolete",
+/// "Discontinued at Digi-Key", and "Not Recommended for New Designs"
+/// for what's functionally the same warning).
+const LIFECYCLE_CONCERN_KEYWORDS: &[&str] = &[
+    "obsolete",
+    "discontinued",
+    "end of life",
+    "eol",
+    "nrnd",
+    "not recommended",
+    "last time buy",
+    "ltb",
+];
+
+pub(crate) fn is_lifecycle_concern(status_text: &str) -> bool {
+    let lower = status_text.to_lowercase();
+    LIFECYCLE_CONCERN_KEYWORDS
+        .iter()
+        .any(|keyword| lower.contains(keyword))
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -133,6 +211,11 @@ fn combine_results(
                     url: part.url,
                     sku: part.sku,
                     price_summary: part.price_summary,
+                    stock_status: part.stock_status,
+                    stock_summary: part.stock_summary,
+                    lifecycle_summary: part.lifecycle_summary,
+                    lifecycle_concern: part.lifecycle_concern,
+                    suggested_replacement: part.suggested_replacement,
                 });
             }
             Err(exc) => warnings.push(format!("Mouser: {exc}")),
@@ -153,6 +236,11 @@ fn combine_results(
                     url: part.url,
                     sku: part.sku,
                     price_summary: part.price_summary,
+                    stock_status: part.stock_status,
+                    stock_summary: part.stock_summary,
+                    lifecycle_summary: part.lifecycle_summary,
+                    lifecycle_concern: part.lifecycle_concern,
+                    suggested_replacement: String::new(),
                 });
             }
             Err(exc) => warnings.push(format!("DigiKey: {exc}")),
@@ -172,9 +260,11 @@ fn combine_results(
 }
 
 /// Writes `info` onto `sym_node` as `Mfr`/`Mfr #` plus, per matched
-/// vendor, `<Vendor>` (URL) / `<Vendor> #` (SKU) / `<Vendor> Qty/Price`.
-/// Re-running a lookup overwrites these in place — see
-/// `set_symbol_property`'s docs for why that's the right default here.
+/// vendor, `<Vendor>` (URL) / `<Vendor> #` (SKU) / `<Vendor> Qty/Price` /
+/// `<Vendor> Stock` / `<Vendor> Lifecycle` (and `<Vendor> Replacement`
+/// when the vendor suggested one). Re-running a lookup overwrites these
+/// in place — see `set_symbol_property`'s docs for why that's the right
+/// default here.
 pub fn apply_part_info(sym_node: &mut SexpNode, info: &PartInfo) {
     set_symbol_property(sym_node, "Mfr", &info.manufacturer);
     set_symbol_property(sym_node, "Mfr #", &info.mpn);
@@ -186,6 +276,23 @@ pub fn apply_part_info(sym_node: &mut SexpNode, info: &PartInfo) {
             &format!("{} Qty/Price", offer.seller),
             &offer.price_summary,
         );
+        set_symbol_property(
+            sym_node,
+            &format!("{} Stock", offer.seller),
+            &offer.stock_summary,
+        );
+        set_symbol_property(
+            sym_node,
+            &format!("{} Lifecycle", offer.seller),
+            &offer.lifecycle_summary,
+        );
+        if !offer.suggested_replacement.is_empty() {
+            set_symbol_property(
+                sym_node,
+                &format!("{} Replacement", offer.seller),
+                &offer.suggested_replacement,
+            );
+        }
     }
 }
 
@@ -253,6 +360,11 @@ mod tests {
             url: format!("https://mouser.com/{seller_suffix}"),
             sku: "595-LM358P".to_string(),
             price_summary: "1:$0.55".to_string(),
+            stock_status: StockStatus::InStock,
+            stock_summary: "1,934 In Stock".to_string(),
+            lifecycle_summary: "Active".to_string(),
+            lifecycle_concern: false,
+            suggested_replacement: String::new(),
         }
     }
 
@@ -263,6 +375,10 @@ mod tests {
             url: "https://digikey.com/lm358p".to_string(),
             sku: "296-1395-5-ND".to_string(),
             price_summary: "1:$0.60".to_string(),
+            stock_status: StockStatus::InStock,
+            stock_summary: "2,500 in stock".to_string(),
+            lifecycle_summary: "Active".to_string(),
+            lifecycle_concern: false,
         }
     }
 
@@ -327,6 +443,123 @@ mod tests {
         part.mpn = String::new();
         let info = combine_results("QUERY-MPN", Some(Ok(part)), None).unwrap();
         assert_eq!(info.mpn, "QUERY-MPN");
+    }
+
+    // ── stock status ─────────────────────────────────────────────────
+
+    #[test]
+    fn in_stock_true_when_any_offer_is_in_stock() {
+        let mut out_of_stock = digikey_part();
+        out_of_stock.stock_status = StockStatus::OutOfStock;
+        out_of_stock.stock_summary = "0 in stock".to_string();
+        let info = combine_results(
+            "LM358P",
+            Some(Ok(mouser_part("a"))), // in stock
+            Some(Ok(out_of_stock)),
+        )
+        .unwrap();
+        assert!(info.in_stock());
+    }
+
+    #[test]
+    fn in_stock_false_when_every_offer_is_out_of_stock() {
+        let mut mouser = mouser_part("a");
+        mouser.stock_status = StockStatus::OutOfStock;
+        mouser.stock_summary = "0 In Stock".to_string();
+        let info = combine_results("LM358P", Some(Ok(mouser)), None).unwrap();
+        assert!(!info.in_stock());
+    }
+
+    #[test]
+    fn apply_part_info_writes_a_stock_property_per_vendor() {
+        let info = combine_results(
+            "LM358P",
+            Some(Ok(mouser_part("a"))),
+            Some(Ok(digikey_part())),
+        )
+        .unwrap();
+        let mut node = crate::sexp::parse(r#"(symbol "U1" (property "Reference" "U"))"#).unwrap();
+        apply_part_info(&mut node, &info);
+
+        let prop_value = |key: &str| -> Option<String> {
+            node.find_all("property").into_iter().find_map(|p| {
+                let Some(Child::Atom(k)) = p.children.first() else {
+                    return None;
+                };
+                (k.text() == key).then(|| match p.children.get(1) {
+                    Some(Child::Atom(v)) => v.text().to_string(),
+                    _ => String::new(),
+                })
+            })
+        };
+        assert_eq!(
+            prop_value("Mouser Stock").as_deref(),
+            Some("1,934 In Stock")
+        );
+        assert_eq!(
+            prop_value("DigiKey Stock").as_deref(),
+            Some("2,500 in stock")
+        );
+        assert_eq!(prop_value("Mouser Lifecycle").as_deref(), Some("Active"));
+        assert_eq!(prop_value("DigiKey Lifecycle").as_deref(), Some("Active"));
+        // No suggested replacement given here, so no property at all —
+        // not an empty one.
+        assert_eq!(prop_value("Mouser Replacement"), None);
+    }
+
+    #[test]
+    fn apply_part_info_writes_a_suggested_replacement_when_given() {
+        let mut mouser = mouser_part("a");
+        mouser.suggested_replacement = "LM358PWR".to_string();
+        let info = combine_results("LM358P", Some(Ok(mouser)), None).unwrap();
+        let mut node = crate::sexp::parse(r#"(symbol "U1" (property "Reference" "U"))"#).unwrap();
+        apply_part_info(&mut node, &info);
+
+        let has_replacement = node.find_all("property").into_iter().any(|p| {
+            matches!(p.children.first(), Some(Child::Atom(a)) if a.text() == "Mouser Replacement")
+                && matches!(p.children.get(1), Some(Child::Atom(v)) if v.text() == "LM358PWR")
+        });
+        assert!(has_replacement);
+    }
+
+    // ── lifecycle status ─────────────────────────────────────────────
+
+    #[test]
+    fn lifecycle_concern_true_when_any_offer_is_flagged() {
+        let mut mouser = mouser_part("a");
+        mouser.lifecycle_summary = "Obsolete".to_string();
+        mouser.lifecycle_concern = true;
+        let info = combine_results("LM358P", Some(Ok(mouser)), Some(Ok(digikey_part()))).unwrap();
+        assert!(info.lifecycle_concern());
+    }
+
+    #[test]
+    fn lifecycle_concern_false_when_no_offer_is_flagged() {
+        let info = combine_results("LM358P", Some(Ok(mouser_part("a"))), None).unwrap();
+        assert!(!info.lifecycle_concern());
+    }
+
+    #[test]
+    fn is_lifecycle_concern_matches_known_keywords_case_insensitively() {
+        for text in [
+            "Obsolete",
+            "obsolete",
+            "Discontinued at Digi-Key",
+            "Not Recommended for New Designs",
+            "NRND",
+            "Last Time Buy",
+            "End of Life",
+        ] {
+            assert!(is_lifecycle_concern(text), "expected '{text}' to be flagged");
+        }
+    }
+
+    #[test]
+    fn is_lifecycle_concern_does_not_flag_active_or_unknown() {
+        assert!(!is_lifecycle_concern("Active"));
+        assert!(!is_lifecycle_concern("New Product"));
+        assert!(!is_lifecycle_concern("Unknown"));
+        assert!(!is_lifecycle_concern(""));
     }
 
     // ── price formatting ─────────────────────────────────────────────

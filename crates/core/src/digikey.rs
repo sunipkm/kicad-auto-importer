@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
-use crate::parts_lookup::format_price_breaks;
+use crate::parts_lookup::{format_price_breaks, is_lifecycle_concern, StockStatus};
 
 const TOKEN_URL: &str = "https://api.digikey.com/v1/oauth2/token";
 const SEARCH_URL: &str = "https://api.digikey.com/products/v4/search/keyword";
@@ -40,6 +40,16 @@ pub struct DigikeyPart {
     pub url: String,
     pub sku: String,
     pub price_summary: String,
+    pub stock_status: StockStatus,
+    /// e.g. `"2,500 in stock"`, derived from DigiKey's own
+    /// `QuantityAvailable` integer (unlike Mouser's free-text
+    /// `Availability`, this one is always a plain count).
+    pub stock_summary: String,
+    /// DigiKey's own `ProductStatus.Status` text, e.g. `"Obsolete"`,
+    /// `"Not Recommended for New Designs"` — `"Unknown"` if DigiKey
+    /// didn't set one.
+    pub lifecycle_summary: String,
+    pub lifecycle_concern: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -176,6 +186,17 @@ struct RawProduct {
     product_url: String,
     #[serde(rename = "ProductVariations", default)]
     product_variations: Vec<RawVariation>,
+    /// DigiKey's own total on-hand quantity across variations.
+    #[serde(rename = "QuantityAvailable", default)]
+    quantity_available: u64,
+    #[serde(rename = "ProductStatus", default)]
+    product_status: Option<RawProductStatus>,
+}
+
+#[derive(Deserialize)]
+struct RawProductStatus {
+    #[serde(rename = "Status", default)]
+    status: String,
 }
 
 #[derive(Deserialize)]
@@ -262,6 +283,19 @@ fn parse_search_response(text: &str, mpn: &str) -> Result<DigikeyPart, DigikeyEr
         None => (String::new(), Vec::new()),
     };
 
+    let stock_status = if product.quantity_available > 0 {
+        StockStatus::InStock
+    } else {
+        StockStatus::OutOfStock
+    };
+    let lifecycle_summary = product
+        .product_status
+        .map(|s| s.status)
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "Unknown".to_string());
+    let lifecycle_concern = is_lifecycle_concern(&lifecycle_summary);
+
     Ok(DigikeyPart {
         manufacturer: product.manufacturer.map(|m| m.name).unwrap_or_default(),
         mpn: if product.manufacturer_product_number.is_empty() {
@@ -272,6 +306,10 @@ fn parse_search_response(text: &str, mpn: &str) -> Result<DigikeyPart, DigikeyEr
         url: product.product_url,
         sku,
         price_summary: format_price_breaks(&breaks),
+        stock_status,
+        stock_summary: format!("{} in stock", product.quantity_available),
+        lifecycle_summary,
+        lifecycle_concern,
     })
 }
 
@@ -293,7 +331,9 @@ mod tests {
                     { "BreakQuantity": 100, "UnitPrice": 0.35 },
                     { "BreakQuantity": 10, "UnitPrice": 0.45 }
                 ]
-            }]
+            }],
+            "QuantityAvailable": 2500,
+            "ProductStatus": { "Id": 0, "Status": "Active" }
         }],
         "ProductsCount": 1
     }"#;
@@ -321,9 +361,59 @@ mod tests {
     }
 
     #[test]
+    fn parses_in_stock_quantity() {
+        let part = parse_search_response(FIXTURE, "LM358P").unwrap();
+        assert_eq!(part.stock_status, StockStatus::InStock);
+        assert_eq!(part.stock_summary, "2500 in stock");
+    }
+
+    #[test]
+    fn zero_quantity_available_is_out_of_stock() {
+        let text = r#"{"Products": [{
+            "ManufacturerProductNumber": "X", "ProductUrl": "",
+            "ProductVariations": [], "QuantityAvailable": 0
+        }]}"#;
+        let part = parse_search_response(text, "X").unwrap();
+        assert_eq!(part.stock_status, StockStatus::OutOfStock);
+        assert_eq!(part.stock_summary, "0 in stock");
+    }
+
+    #[test]
     fn missing_credentials_is_rejected_before_any_request() {
         let err = lookup_part(&DigikeyCredentials::default(), "X").unwrap_err();
         assert!(matches!(err, DigikeyError::MissingCredentials));
+    }
+
+    // ── lifecycle status ─────────────────────────────────────────────
+
+    #[test]
+    fn parses_active_lifecycle_status() {
+        let part = parse_search_response(FIXTURE, "LM358P").unwrap();
+        assert_eq!(part.lifecycle_summary, "Active");
+        assert!(!part.lifecycle_concern);
+    }
+
+    #[test]
+    fn obsolete_product_status_is_flagged() {
+        let text = r#"{"Products": [{
+            "ManufacturerProductNumber": "X", "ProductUrl": "",
+            "ProductVariations": [], "QuantityAvailable": 0,
+            "ProductStatus": { "Id": 1, "Status": "Obsolete" }
+        }]}"#;
+        let part = parse_search_response(text, "X").unwrap();
+        assert_eq!(part.lifecycle_summary, "Obsolete");
+        assert!(part.lifecycle_concern);
+    }
+
+    #[test]
+    fn missing_product_status_defaults_to_unknown() {
+        let text = r#"{"Products": [{
+            "ManufacturerProductNumber": "X", "ProductUrl": "",
+            "ProductVariations": [], "QuantityAvailable": 0
+        }]}"#;
+        let part = parse_search_response(text, "X").unwrap();
+        assert_eq!(part.lifecycle_summary, "Unknown");
+        assert!(!part.lifecycle_concern);
     }
 
     // ── token cache ──────────────────────────────────────────────────

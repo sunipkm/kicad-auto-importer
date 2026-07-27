@@ -4,6 +4,7 @@
 //! GUI toolkit or on KiCad itself; the `app` crate is the only thing
 //! that knows about windows.
 
+pub mod bom_report;
 pub mod config;
 pub mod digikey;
 pub mod footprint_importer;
@@ -13,6 +14,7 @@ pub mod library_import;
 pub mod model_importer;
 pub mod mouser;
 pub mod parts_lookup;
+pub mod schematic;
 pub mod sexp;
 pub mod symbol_importer;
 pub mod watcher;

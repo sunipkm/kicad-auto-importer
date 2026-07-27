@@ -13,7 +13,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::parts_lookup::format_price_breaks;
+use crate::parts_lookup::{format_price_breaks, is_lifecycle_concern, StockStatus};
 
 const BASE_URL: &str = "https://api.mouser.com/api/v1";
 
@@ -29,6 +29,17 @@ pub struct MouserPart {
     pub url: String,
     pub sku: String,
     pub price_summary: String,
+    pub stock_status: StockStatus,
+    /// Mouser's own `Availability` text verbatim, e.g. `"1,934 In
+    /// Stock"` — see [`parse_availability`].
+    pub stock_summary: String,
+    /// Mouser's own `LifecycleStatus` text, e.g. `"Obsolete"` —
+    /// `"Unknown"` if Mouser didn't set it (the common case: seen
+    /// `null` even for parts confirmed in stock).
+    pub lifecycle_summary: String,
+    pub lifecycle_concern: bool,
+    /// Mouser's `SuggestedReplacement`, if given; empty otherwise.
+    pub suggested_replacement: String,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -115,6 +126,18 @@ struct RawPart {
     product_detail_url: String,
     #[serde(rename = "PriceBreaks", default)]
     price_breaks: Vec<RawPriceBreak>,
+    /// Free-text, e.g. `"1,934 In Stock"`, `"0 In Stock"`,
+    /// `"Non-Stocked"` — see [`parse_availability`]. `Option` because
+    /// Mouser sends `null` here for some parts, not just an empty
+    /// string or an absent key.
+    #[serde(rename = "Availability", default)]
+    availability: Option<String>,
+    /// e.g. `"Obsolete"` — `null` far more often than set, even for
+    /// well-stocked parts (confirmed against a live account).
+    #[serde(rename = "LifecycleStatus", default)]
+    lifecycle_status: Option<String>,
+    #[serde(rename = "SuggestedReplacement", default)]
+    suggested_replacement: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -151,6 +174,32 @@ impl PriceValue {
                 .unwrap_or(0.0),
         }
     }
+}
+
+/// Mouser's `Availability` field is free text, not a plain integer
+/// (`"1,934 In Stock"`, `"0 In Stock"`, `"Non-Stocked"`, `"Call"`, `null`,
+/// or an empty string) — read only the leading quantity, if any: present
+/// and nonzero means in stock, anything else (no leading number, or a
+/// leading zero) means it isn't orderable right now. The raw text is
+/// kept verbatim as the summary since it's more legible to a human than
+/// a number reduced back down from it.
+fn parse_availability(raw: Option<&str>) -> (StockStatus, String) {
+    let trimmed = raw.unwrap_or("").trim();
+    if trimmed.is_empty() {
+        return (StockStatus::OutOfStock, "Availability unknown".to_string());
+    }
+    let leading_digits: String = trimmed
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == ',')
+        .filter(|c| c.is_ascii_digit())
+        .collect();
+    let quantity: u64 = leading_digits.parse().unwrap_or(0);
+    let status = if quantity > 0 {
+        StockStatus::InStock
+    } else {
+        StockStatus::OutOfStock
+    };
+    (status, trimmed.to_string())
 }
 
 fn search_part(api_key: &str, mpn: &str) -> Result<MouserPart, MouserError> {
@@ -204,6 +253,15 @@ fn parse_search_response(text: &str, mpn: &str) -> Result<MouserPart, MouserErro
         .iter()
         .map(|b| (b.quantity, b.price.as_f64()))
         .collect();
+    let (stock_status, stock_summary) = parse_availability(part.availability.as_deref());
+    let lifecycle_summary = part
+        .lifecycle_status
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("Unknown")
+        .to_string();
+    let lifecycle_concern = is_lifecycle_concern(&lifecycle_summary);
 
     Ok(MouserPart {
         manufacturer: part.manufacturer,
@@ -215,6 +273,15 @@ fn parse_search_response(text: &str, mpn: &str) -> Result<MouserPart, MouserErro
         url: part.product_detail_url,
         sku: part.mouser_part_number,
         price_summary: format_price_breaks(&breaks),
+        stock_status,
+        stock_summary,
+        lifecycle_summary,
+        lifecycle_concern,
+        suggested_replacement: part
+            .suggested_replacement
+            .unwrap_or_default()
+            .trim()
+            .to_string(),
     })
 }
 
@@ -237,7 +304,8 @@ mod tests {
                     { "Quantity": 1, "Price": "$0.5500", "Currency": "USD" },
                     { "Quantity": 100, "Price": "$0.3200", "Currency": "USD" },
                     { "Quantity": 10, "Price": "$0.4100", "Currency": "USD" }
-                ]
+                ],
+                "Availability": "1,934 In Stock"
             }]
         }
     }"#;
@@ -288,5 +356,83 @@ mod tests {
     fn missing_credentials_is_rejected_before_any_request() {
         let err = lookup_part(&MouserCredentials::default(), "X").unwrap_err();
         assert!(matches!(err, MouserError::MissingApiKey));
+    }
+
+    // ── stock availability ───────────────────────────────────────────
+
+    #[test]
+    fn parses_in_stock_availability() {
+        let part = parse_search_response(FIXTURE, "LM358P").unwrap();
+        assert_eq!(part.stock_status, StockStatus::InStock);
+        assert_eq!(part.stock_summary, "1,934 In Stock");
+    }
+
+    #[test]
+    fn zero_in_stock_text_is_out_of_stock() {
+        assert_eq!(
+            parse_availability(Some("0 In Stock")),
+            (StockStatus::OutOfStock, "0 In Stock".to_string())
+        );
+    }
+
+    #[test]
+    fn non_numeric_availability_is_out_of_stock() {
+        assert_eq!(
+            parse_availability(Some("Non-Stocked")),
+            (StockStatus::OutOfStock, "Non-Stocked".to_string())
+        );
+    }
+
+    #[test]
+    fn empty_availability_is_out_of_stock_and_unknown() {
+        assert_eq!(
+            parse_availability(Some("")),
+            (StockStatus::OutOfStock, "Availability unknown".to_string())
+        );
+    }
+
+    #[test]
+    fn null_availability_is_out_of_stock_and_unknown() {
+        // Mouser sends `"Availability": null`, not just an empty string
+        // or a missing key, for some parts — must not error parsing.
+        assert_eq!(
+            parse_availability(None),
+            (StockStatus::OutOfStock, "Availability unknown".to_string())
+        );
+    }
+
+    #[test]
+    fn comma_thousands_separator_is_parsed() {
+        assert_eq!(
+            parse_availability(Some("12,345 In Stock")).0,
+            StockStatus::InStock
+        );
+    }
+
+    // ── lifecycle status ─────────────────────────────────────────────
+
+    #[test]
+    fn null_lifecycle_status_defaults_to_unknown_and_no_concern() {
+        // The common case in practice: `"LifecycleStatus": null` even
+        // for well-stocked, active parts.
+        let part = parse_search_response(FIXTURE, "LM358P").unwrap();
+        assert_eq!(part.lifecycle_summary, "Unknown");
+        assert!(!part.lifecycle_concern);
+    }
+
+    #[test]
+    fn obsolete_lifecycle_status_is_flagged() {
+        let text = r#"{
+            "SearchResults": { "Parts": [{
+                "MouserPartNumber": "1", "ManufacturerPartNumber": "X",
+                "Manufacturer": "Acme", "ProductDetailUrl": "",
+                "LifecycleStatus": "Obsolete",
+                "SuggestedReplacement": "X-NEW"
+            }]}
+        }"#;
+        let part = parse_search_response(text, "X").unwrap();
+        assert_eq!(part.lifecycle_summary, "Obsolete");
+        assert!(part.lifecycle_concern);
+        assert_eq!(part.suggested_replacement, "X-NEW");
     }
 }
