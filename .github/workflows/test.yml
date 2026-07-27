@@ -1,22 +1,43 @@
 name: test
 
 on:
-  push:
-    branches: [main]
-  pull_request:
   workflow_call:
+    inputs:
+      build_release:
+        description: >-
+          Also build --release for this job's target(s), package into an
+          archive, and upload it as an artifact — used by release.yml so
+          the tag-triggered release build reuses the same toolchain setup
+          this job already pays for, instead of a separate job repeating it.
+        type: boolean
+        default: false
 
 jobs:
   test:
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        include:
+          - os: ubuntu-latest
+            targets: [x86_64-unknown-linux-gnu]
+            archive_ext: tar.gz
+          - os: macos-latest
+            # One job, both Apple targets: `cargo test` only runs the
+            # native one (you can't execute a foreign-arch test binary
+            # without emulation), but Xcode's toolchain cross-compiles
+            # `--release` for the other one with no extra setup, so both
+            # release archives still come out of this single job.
+            targets: [x86_64-apple-darwin, aarch64-apple-darwin]
+            archive_ext: tar.gz
+          - os: windows-latest
+            targets: [x86_64-pc-windows-msvc]
+            archive_ext: zip
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+          targets: ${{ join(matrix.targets, ',') }}
       - uses: Swatinem/rust-cache@v2
       - name: Format check
         run: cargo fmt --all -- --check
@@ -24,3 +45,37 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Test
         run: cargo test --workspace
+
+      - name: Build release binaries
+        if: inputs.build_release
+        shell: bash
+        run: |
+          set -euo pipefail
+          for target in ${{ join(matrix.targets, ' ') }}; do
+            cargo build --release --target "$target" -p kicad-auto-importer
+          done
+
+      - name: Package release archives (unix)
+        if: inputs.build_release && matrix.archive_ext == 'tar.gz'
+        shell: bash
+        run: |
+          set -euo pipefail
+          for target in ${{ join(matrix.targets, ' ') }}; do
+            tar czf "kicad-auto-importer-$target.tar.gz" \
+              -C "target/$target/release" kicad-auto-importer
+          done
+      - name: Package release archives (windows)
+        if: inputs.build_release && matrix.archive_ext == 'zip'
+        shell: bash
+        run: |
+          set -euo pipefail
+          for target in ${{ join(matrix.targets, ' ') }}; do
+            7z a "kicad-auto-importer-$target.zip" \
+              "target/$target/release/kicad-auto-importer.exe"
+          done
+
+      - uses: actions/upload-artifact@v4
+        if: inputs.build_release
+        with:
+          name: kicad-auto-importer-${{ matrix.os }}
+          path: kicad-auto-importer-*.${{ matrix.archive_ext }}

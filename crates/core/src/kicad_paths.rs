@@ -477,9 +477,15 @@ mod tests {
         let entries = parse_lib_table(&table_path, Some(&project_dir.to_string_lossy()));
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].name, "Parts");
+        // Registered URIs are always forward-slash-normalized (KiCad's own
+        // file format convention, even on Windows) — `to_string_lossy()`
+        // alone would keep Windows' native backslashes and mismatch here.
         assert_eq!(
             entries[0].uri,
-            project_dir.join("Parts.kicad_sym").to_string_lossy()
+            project_dir
+                .join("Parts.kicad_sym")
+                .to_string_lossy()
+                .replace('\\', "/")
         );
     }
 

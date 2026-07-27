@@ -6,51 +6,14 @@ on:
       - "v[0-9]+.[0-9]+.[0-9]+"
 
 jobs:
-  test:
-    uses: ./.github/workflows/test.yml
-
+  # test.yml's job already sets up a full toolchain per OS/target to run
+  # fmt/clippy/test — `build_release: true` has that same job build,
+  # package, and upload the release binaries too, rather than a separate
+  # job here repeating the whole toolchain setup just to build.
   build:
-    needs: test
-    strategy:
-      matrix:
-        include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            archive_ext: tar.gz
-          - os: macos-latest
-            target: x86_64-apple-darwin
-            archive_ext: tar.gz
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            archive_ext: tar.gz
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            archive_ext: zip
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
-      - name: Build
-        run: cargo build --release --target ${{ matrix.target }} -p kicad-auto-importer
-
-      - name: Package (unix)
-        if: matrix.archive_ext == 'tar.gz'
-        run: |
-          cd target/${{ matrix.target }}/release
-          tar czf ../../../kicad-auto-importer-${{ matrix.target }}.tar.gz kicad-auto-importer
-      - name: Package (windows)
-        if: matrix.archive_ext == 'zip'
-        run: |
-          cd target/${{ matrix.target }}/release
-          7z a ../../../kicad-auto-importer-${{ matrix.target }}.zip kicad-auto-importer.exe
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: kicad-auto-importer-${{ matrix.target }}
-          path: kicad-auto-importer-${{ matrix.target }}.${{ matrix.archive_ext }}
+    uses: ./.github/workflows/test.yml
+    with:
+      build_release: true
 
   release:
     needs: build
