@@ -18,6 +18,7 @@ use kicad_auto_importer_core::zip_importer::{
 
 use crate::library_import_ui::{self, LibraryImportState};
 use crate::theme::{self, ACCENT, DANGER, TITLE_BAR_BG};
+use crate::tray;
 use crate::window_chrome;
 
 pub struct MainApp {
@@ -36,10 +37,23 @@ pub struct MainApp {
     status: String,
 
     library_import: LibraryImportState,
+
+    /// Fires whenever a second copy of the app is launched (see
+    /// `single_instance`) — the window should show/focus itself.
+    wake_rx: mpsc::Receiver<()>,
+    /// Set only by the tray menu's Quit item; lets the close-request
+    /// interception in `update()` tell "really quit" apart from the
+    /// window's own X button / Alt+F4 / etc., which should hide to tray
+    /// instead of exiting.
+    force_quit: bool,
+    /// Kept alive for as long as the tray icon should stay visible.
+    /// Always `None` on Linux, where the tray icon instead lives for the
+    /// process's lifetime on its own dedicated GTK thread (see `tray`).
+    _tray_icon: Option<tray_icon::TrayIcon>,
 }
 
-impl Default for MainApp {
-    fn default() -> Self {
+impl MainApp {
+    pub fn new(wake_rx: mpsc::Receiver<()>, tray_icon: Option<tray_icon::TrayIcon>) -> Self {
         MainApp {
             project_path: String::new(),
             watch_folder: String::new(),
@@ -54,6 +68,9 @@ impl Default for MainApp {
             log_lines: Vec::new(),
             status: String::new(),
             library_import: LibraryImportState::default(),
+            wake_rx,
+            force_quit: false,
+            _tray_icon: tray_icon,
         }
     }
 }
@@ -204,6 +221,49 @@ impl MainApp {
         }
         for line in lines {
             self.log(line);
+        }
+    }
+
+    fn show_and_focus(ctx: &egui::Context) {
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+    }
+
+    /// Polls everything that can ask the window to reappear or the
+    /// watcher to toggle from outside the UI itself: a second instance
+    /// being launched (`wake_rx`, see `single_instance`), and tray icon
+    /// / tray menu clicks (`tray_icon`'s own global event receivers —
+    /// see `tray.rs` for why those aren't funneled through a channel we
+    /// own). Called once per frame from `update`, the same polling
+    /// pattern `drain_log_channel` already uses for the watcher's log
+    /// channel.
+    fn drain_tray_events(&mut self, ctx: &egui::Context) {
+        if self.wake_rx.try_recv().is_ok() {
+            Self::show_and_focus(ctx);
+        }
+
+        while let Ok(event) = tray_icon::TrayIconEvent::receiver().try_recv() {
+            if let tray_icon::TrayIconEvent::Click {
+                button: tray_icon::MouseButton::Left,
+                button_state: tray_icon::MouseButtonState::Up,
+                ..
+            } = event
+            {
+                Self::show_and_focus(ctx);
+            }
+        }
+
+        while let Ok(event) = tray_icon::menu::MenuEvent::receiver().try_recv() {
+            match event.id.as_ref() {
+                tray::MENU_SHOW => Self::show_and_focus(ctx),
+                tray::MENU_START if self.watcher.is_none() => self.start_watching(),
+                tray::MENU_STOP if self.watcher.is_some() => self.stop_watching(),
+                tray::MENU_QUIT => {
+                    self.force_quit = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+                _ => {}
+            }
         }
     }
 
@@ -358,8 +418,16 @@ fn path_row(
 impl eframe::App for MainApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.drain_log_channel();
-        if self.watcher.is_some() {
-            ctx.request_repaint_after(std::time::Duration::from_millis(200));
+        self.drain_tray_events(ctx);
+        // Always scheduled, not just while watching: wake_rx/tray events
+        // (a second instance launching, a tray click) need to be polled
+        // even while idle or hidden to the tray, since nothing else would
+        // otherwise nudge the event loop into calling `update` again.
+        ctx.request_repaint_after(std::time::Duration::from_millis(250));
+
+        if ctx.input(|i| i.viewport().close_requested()) && !self.force_quit {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
         }
 
         egui::TopBottomPanel::top("title_bar")

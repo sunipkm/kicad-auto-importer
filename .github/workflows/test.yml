@@ -27,7 +27,7 @@ jobs:
             # `--release` for the other one with no extra setup, so both
             # release archives still come out of this single job.
             targets: [x86_64-apple-darwin, aarch64-apple-darwin]
-            archive_ext: tar.gz
+            archive_ext: dmg
           - os: windows-latest
             targets: [x86_64-pc-windows-msvc]
             archive_ext: zip
@@ -39,6 +39,15 @@ jobs:
           components: rustfmt, clippy
           targets: ${{ join(matrix.targets, ',') }}
       - uses: Swatinem/rust-cache@v2
+      # Linux-only build dependency of the `tray-icon` crate (system
+      # tray icon + menu, see crates/app/src/tray.rs): GTK3 to create
+      # the tray widget and libayatana-appindicator for the
+      # StatusNotifierItem/AppIndicator protocol most desktop
+      # environments actually render it through. macOS/Windows use
+      # their native tray APIs instead and need nothing extra here.
+      - name: Install tray icon build dependencies (linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libayatana-appindicator3-dev
       - name: Format check
         run: cargo fmt --all -- --check
       - name: Clippy
@@ -103,19 +112,88 @@ jobs:
             plutil -insert CFBundleInfoDictionaryVersion -string "6.0" "$plist"
             plutil -insert LSMinimumSystemVersion -string "11.0" "$plist"
             plutil -insert NSHighResolutionCapable -bool true "$plist"
-
-            tar czf "kicad-auto-importer-$target.tar.gz" \
-              -C "$release_dir" "KiCad Auto Importer.app"
           done
 
-      - name: Package release archives (windows)
-        if: inputs.build_release && matrix.archive_ext == 'zip'
+      # A DMG rather than a bare `.tar.gz` of the `.app`: this is the
+      # familiar "drag the app onto Applications" installer experience
+      # macOS users expect, built with `create-dmg` (not preinstalled,
+      # hence the `brew install` below) rather than hand-rolling
+      # `hdiutil`/AppleScript window-layout automation ourselves.
+      - name: Package macOS installer DMG(s)
+        if: inputs.build_release && matrix.os == 'macos-latest'
         shell: bash
         run: |
           set -euo pipefail
+          brew install create-dmg
+
+          # The background is target-independent, so it's rendered once
+          # rather than per-target — from the aarch64 binary specifically
+          # since that's what actually runs natively on this runner
+          # (arm64), no Rosetta needed just for a build-tool escape
+          # hatch. Keep --window-size/--icon-size/the icon coordinates
+          # below in sync with `icon::DMG_WINDOW_SIZE` in
+          # crates/app/src/icon.rs, which this same image is rendered by.
+          background_bin="target/aarch64-apple-darwin/release/kicad-auto-importer"
+          "$background_bin" --emit-dmg-background dmg-background.png
+
           for target in ${{ join(matrix.targets, ' ') }}; do
-            7z a "kicad-auto-importer-$target.zip" \
-              "target/$target/release/kicad-auto-importer.exe"
+            release_dir="target/$target/release"
+
+            # create-dmg copies *everything* in its source folder into
+            # the disk image, so the `.app` needs to be alone in a clean
+            # staging directory first — `release_dir` itself is full of
+            # unrelated build artifacts (the raw binary, AppIcon.iconset,
+            # Info.plist, ...) that would otherwise end up in the DMG too.
+            staging_dir="target/$target/dmg-staging"
+            rm -rf "$staging_dir"
+            mkdir -p "$staging_dir"
+            cp -R "$release_dir/KiCad Auto Importer.app" "$staging_dir/"
+
+            create-dmg \
+              --volname "KiCad Auto Importer" \
+              --background dmg-background.png \
+              --window-size 660 400 \
+              --icon-size 128 \
+              --icon "KiCad Auto Importer.app" 180 170 \
+              --app-drop-link 480 170 \
+              --no-internet-enable \
+              "kicad-auto-importer-$target.dmg" \
+              "$staging_dir"
+          done
+
+      # An NSIS installer rather than a bare `.exe`: Start Menu shortcut,
+      # an uninstaller Add/Remove Programs can find, and a proper
+      # install location — see packaging/windows/installer.nsi for why
+      # it's a per-user (no admin/UAC) install. `makensis` is
+      # preinstalled on `windows-latest`, so no extra setup step is
+      # needed to get it, unlike `create-dmg` above.
+      - name: Package Windows installer(s)
+        if: inputs.build_release && matrix.os == 'windows-latest'
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          # NSIS's VIProductVersion directive requires a strictly
+          # numeric "X.X.X.X" — strip any "-pre0"-style suffix (release
+          # tags can have one; see the tag patterns this workflow's
+          # caller, release.yml, triggers on) just for that directive,
+          # while the full tag (via PRODUCT_VERSION) still shows up
+          # everywhere else: the installer UI and Add/Remove Programs.
+          version_numeric="${version%%-*}"
+          for target in ${{ join(matrix.targets, ' ') }}; do
+            release_dir="target/$target/release"
+            "$release_dir/kicad-auto-importer.exe" --emit-ico "$release_dir/app.ico"
+
+            out_file="KiCadAutoImporter-Setup-$target.exe"
+            makensis \
+              "-DEXE_PATH=$release_dir/kicad-auto-importer.exe" \
+              "-DICO_PATH=$release_dir/app.ico" \
+              "-DPRODUCT_VERSION=$version" \
+              "-DFILE_VERSION=$version_numeric" \
+              "-DOUT_FILE=$out_file" \
+              packaging/windows/installer.nsi
+
+            7z a "kicad-auto-importer-$target.zip" "$out_file"
           done
 
       - uses: actions/upload-artifact@v4

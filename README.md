@@ -31,10 +31,15 @@ downloads folder.
 - Copies referenced 3-D models into the project and rewrites model
   paths to a `${KIPRJMOD}`-relative URI.
 - Optional move-after-import and timestamped backups of the source ZIP.
-- Single self-contained binary — no KiCad, Python, or runtime
-  dependencies to install.
+- Single self-contained binary — does not require KiCad or Python (Linux
+  needs GTK3 + libayatana-appindicator at runtime for the tray icon; see
+  below).
 - Import symbols and footprints from project-specific libraries of other
   KiCad projects.
+- Closes to a system tray icon instead of quitting — restore the window
+  from there, or start/stop watching without opening it at all. Only one
+  instance ever runs; launching it again just brings the existing window
+  to the front.
 
 ## Installation
 
@@ -44,17 +49,25 @@ Prebuilt binaries for Linux, macOS (Intel and Apple Silicon), and
 Windows are published on the
 [Releases page](https://github.com/sunipkm/kicad-auto-importer/releases/latest):
 
-| Platform             | Artifact                                         |
-| -------------------- | ------------------------------------------------- |
-| Windows (x86_64)     | `kicad-auto-importer-x86_64-pc-windows-msvc.zip`   |
-| Linux (x86_64)       | `kicad-auto-importer-x86_64-unknown-linux-gnu.tar.gz` |
-| macOS (Intel)        | `kicad-auto-importer-x86_64-apple-darwin.tar.gz`   |
-| macOS (Apple Silicon) | `kicad-auto-importer-aarch64-apple-darwin.tar.gz` |
+| Platform             | Artifact                                         | Contains |
+| -------------------- | ------------------------------------------------- | -------- |
+| Windows (x86_64)     | `kicad-auto-importer-x86_64-pc-windows-msvc.zip`   | An NSIS installer (`KiCadAutoImporter-Setup-*.exe`) — per-user install, no admin/UAC prompt, Start Menu shortcut, and a proper uninstaller. |
+| Linux (x86_64)       | `kicad-auto-importer-x86_64-unknown-linux-gnu.tar.gz` | The bare binary. |
+| macOS (Intel)        | `kicad-auto-importer-x86_64-apple-darwin.dmg`   | A `.dmg` — the usual drag-`KiCad Auto Importer.app`-onto-Applications installer. |
+| macOS (Apple Silicon) | `kicad-auto-importer-aarch64-apple-darwin.dmg` | Same as above. |
 
-Unzip or untar the archive and run the executable — there is no
-installer and no external runtime to set up.
+Windows: run the installer inside the zip. macOS: open the `.dmg` and
+drag the app to Applications. Linux: untar and run the executable
+directly — there is no installer, and the system tray icon needs GTK3
+and libayatana-appindicator (or libappindicator) installed, which is
+standard on most desktop distros; e.g. on Debian/Ubuntu:
+`sudo apt install libgtk-3-0 libayatana-appindicator3-1`.
 
 ### Build from source
+
+On Linux, install the tray icon's build dependencies first:
+`sudo apt install libgtk-3-dev libayatana-appindicator3-dev` (Debian/Ubuntu;
+`gtk3 libappindicator-gtk3` or `libayatana-appindicator` on Arch/Manjaro).
 
 ```sh
 cargo build --release -p kicad-auto-importer

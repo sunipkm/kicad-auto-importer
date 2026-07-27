@@ -19,7 +19,7 @@
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
 
-use crate::icon_render::render_icon_rgba;
+use crate::icon_render::{render_dmg_background_rgba, render_icon_rgba};
 
 /// Size used for the window/taskbar/dock icon set via `with_icon(...)`.
 const WINDOW_ICON_SIZE: u32 = 256;
@@ -65,5 +65,38 @@ pub fn write_iconset(dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
             .expect("render_icon_rgba always returns exactly size*size*4 bytes");
         image.save_with_format(dir.join(name), image::ImageFormat::Png)?;
     }
+    Ok(())
+}
+
+/// Size used for a single standalone `.ico` (see [`write_ico`]) — large
+/// enough to look sharp as the NSIS installer/uninstaller's icon.
+const STANDALONE_ICO_SIZE: u32 = 256;
+
+/// Writes a single `.ico` at `path`. Used for the Windows NSIS
+/// installer/uninstaller icon (see `packaging/windows/installer.nsi`):
+/// unlike `build.rs`'s embedded-in-the-`.exe` icon, `makensis` needs an
+/// actual `.ico` file on disk to point `MUI_ICON`/`MUI_UNICON` at.
+pub fn write_ico(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let rgba = render_icon_rgba(STANDALONE_ICO_SIZE);
+    let image = image::RgbaImage::from_raw(STANDALONE_ICO_SIZE, STANDALONE_ICO_SIZE, rgba)
+        .expect("render_icon_rgba always returns exactly size*size*4 bytes");
+    image.save_with_format(path, image::ImageFormat::Ico)?;
+    Ok(())
+}
+
+/// The macOS installer DMG's Finder window size — the CI packaging step
+/// (`.github/workflows/test.yml`) passes the same numbers to
+/// `create-dmg --window-size` and positions the `.app`/`Applications`
+/// icons within it, so this and that have to stay in sync by hand.
+pub const DMG_WINDOW_SIZE: (u32, u32) = (660, 400);
+
+/// Writes the DMG Finder-window background (see
+/// [`render_dmg_background_rgba`]) to `path` as a PNG.
+pub fn write_dmg_background(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let (width, height) = DMG_WINDOW_SIZE;
+    let rgba = render_dmg_background_rgba(width, height);
+    let image = image::RgbaImage::from_raw(width, height, rgba)
+        .expect("render_dmg_background_rgba always returns exactly width*height*4 bytes");
+    image.save_with_format(path, image::ImageFormat::Png)?;
     Ok(())
 }

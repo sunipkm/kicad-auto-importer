@@ -158,18 +158,30 @@ impl LibraryImportState {
     }
 }
 
-/// A rough wrap-width heuristic (~40 characters/line, matching the
-/// Description column's usual width) for sizing a table row tall enough
-/// to show a wrapped multi-line description instead of clipping it to
-/// one line. Capped so a single absurdly long description can't make one
-/// row take over the whole table.
-fn description_row_height(description: &str) -> f32 {
-    const CHARS_PER_LINE: usize = 40;
-    const LINE_HEIGHT: f32 = 16.0;
+/// Sizes a table row tall enough to show a wrapped multi-line
+/// description instead of clipping it to one line. Capped so a single
+/// absurdly long description can't make one row take over the whole
+/// table.
+///
+/// Measures the real wrapped galley rather than guessing from a
+/// characters-per-line constant: a proportional font's characters don't
+/// all have the same width, so a fixed "~40 chars ≈ one line" heuristic
+/// (the previous approach here) systematically under-counts lines for
+/// text with a lot of wide characters, silently clipping the last line
+/// or two. `WRAP_WIDTH` has to track the Description column's actual
+/// width below (`Column::initial(300.0)`, minus a little slack for cell
+/// padding) — there's no getting around that by hand, since row heights
+/// must be known *before* `TableBuilder` lays out and resolves real
+/// column widths for this frame.
+fn description_row_height(ctx: &egui::Context, description: &str) -> f32 {
     const MAX_LINES: usize = 4;
-    let len = description.chars().count().max(1);
-    let lines = len.div_ceil(CHARS_PER_LINE).clamp(1, MAX_LINES);
-    lines as f32 * LINE_HEIGHT + 8.0
+    const WRAP_WIDTH: f32 = 300.0 - 12.0;
+
+    let font_id = egui::TextStyle::Body.resolve(&ctx.style());
+    let galley = ctx.fonts(|f| f.layout_delayed_color(description.to_owned(), font_id, WRAP_WIDTH));
+    let line_count = galley.rows.len().max(1);
+    let line_height = galley.rect.height() / line_count as f32;
+    line_height * line_count.min(MAX_LINES) as f32 + 8.0
 }
 
 pub fn show(state: &mut LibraryImportState, ctx: &egui::Context, dest: &CrossImportSettings) {
@@ -357,7 +369,7 @@ pub fn show(state: &mut LibraryImportState, ctx: &egui::Context, dest: &CrossImp
                         let row_heights: Vec<f32> = state
                             .rows
                             .iter()
-                            .map(|r| description_row_height(&r.description))
+                            .map(|r| description_row_height(ctx, &r.description))
                             .collect();
                         TableBuilder::new(ui)
                             .id_salt("library_import_table")
@@ -384,7 +396,14 @@ pub fn show(state: &mut LibraryImportState, ctx: &egui::Context, dest: &CrossImp
                             .column(Column::initial(40.0).at_least(30.0).clip(true))
                             .column(Column::initial(150.0).at_least(60.0).clip(true))
                             .column(Column::initial(300.0).at_least(120.0).clip(true))
-                            .min_scrolled_height(table_height)
+                            // 0.0, not `table_height`: matches
+                            // `egui_demo_lib`'s own table demo — forcing
+                            // a *minimum* scrolled height equal to the
+                            // max only ever adds empty space below a
+                            // short row list, since `max_scroll_height`
+                            // below already caps how tall the table can
+                            // grow.
+                            .min_scrolled_height(0.0)
                             .max_scroll_height(table_height)
                             .header(24.0, |mut header| {
                                 header.col(|_ui| {});
