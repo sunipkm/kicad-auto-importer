@@ -341,6 +341,69 @@ pub fn extract_footprint_ref(sym_node: &SexpNode) -> Option<String> {
     result
 }
 
+/// Sets a top-level `(property "<key>" "<value>")` on `sym_node`,
+/// replacing its value if the property already exists or appending a
+/// brand new (hidden — see below) one otherwise. Used to annotate a
+/// symbol with vendor/pricing data from an Octopart/Nexar lookup (see
+/// `crate::octopart`), but is otherwise a generic primitive any future
+/// "add arbitrary metadata to a symbol" caller can reuse.
+///
+/// Deliberately *not* built on `walk_mut` (unlike `patch_symbol_footprint`
+/// above): `walk_mut` recurses into every nested node, including
+/// multi-unit sub-symbols (`(symbol "Foo_1_1" ...)`), which is harmless
+/// for Footprint-patching (a sub-unit never carries its own Footprint
+/// property) but wrong here — a generic setter recursing that way could
+/// duplicate the property into a sub-unit node instead of (or as well
+/// as) the top-level symbol. This only ever scans `sym_node`'s own
+/// direct children.
+pub fn set_symbol_property(sym_node: &mut SexpNode, key: &str, value: &str) {
+    for child in &mut sym_node.children {
+        let Child::Node(node) = child else { continue };
+        if node.name != "property" {
+            continue;
+        }
+        let is_match = matches!(node.children.first(), Some(Child::Atom(a)) if a.text() == key);
+        if !is_match {
+            continue;
+        }
+        let new_value = Child::Atom(Atom::Quoted(value.to_string()));
+        match node.children.get_mut(1) {
+            Some(existing) => *existing = new_value,
+            None => node.children.push(new_value),
+        }
+        return;
+    }
+
+    // Not found: append a new property, positioned on top of the
+    // origin and hidden — the same `(at 0 0 0)` / `(effects ... hide)`
+    // shape KiCad itself uses for fields it ships hidden by default
+    // (e.g. stock manufacturer fields). Position is otherwise
+    // irrelevant since `hide` keeps it off the schematic canvas
+    // entirely, so there's no on-canvas collision to worry about
+    // between however many of these get added.
+    let mut prop = SexpNode::new("property");
+    prop.push_atom(Atom::quoted(key));
+    prop.push_atom(Atom::quoted(value));
+
+    let mut at = SexpNode::new("at");
+    at.push_atom(Atom::bare("0"));
+    at.push_atom(Atom::bare("0"));
+    at.push_atom(Atom::bare("0"));
+    prop.push_node(at);
+
+    let mut size = SexpNode::new("size");
+    size.push_atom(Atom::bare("1.27"));
+    size.push_atom(Atom::bare("1.27"));
+    let mut font = SexpNode::new("font");
+    font.push_node(size);
+    let mut effects = SexpNode::new("effects");
+    effects.push_node(font);
+    effects.push_atom(Atom::bare("hide"));
+    prop.push_node(effects);
+
+    sym_node.push_node(prop);
+}
+
 fn walk<'a>(node: &'a SexpNode, f: &mut impl FnMut(&'a SexpNode)) {
     f(node);
     for child in &node.children {
@@ -371,6 +434,21 @@ mod tests {
         sexp::parse(&text).unwrap()
     }
 
+    fn prop_value(node: &SexpNode, key: &str) -> Option<String> {
+        node.find_all("property").into_iter().find_map(|prop| {
+            let Some(Child::Atom(k)) = prop.children.first() else {
+                return None;
+            };
+            if k.text() != key {
+                return None;
+            }
+            match prop.children.get(1) {
+                Some(Child::Atom(v)) => Some(v.text().to_string()),
+                _ => None,
+            }
+        })
+    }
+
     #[test]
     fn patch_footprint_rewrites_property_and_preserves_rest() {
         let mut node = sample_symbol("Widget", "OldLib:OldFP");
@@ -392,6 +470,71 @@ mod tests {
             extract_footprint_ref(&node).as_deref(),
             Some("NewLib:RenamedFP")
         );
+    }
+
+    #[test]
+    fn set_symbol_property_appends_when_absent() {
+        let mut node = sample_symbol("Widget", "MyLib:MyFP");
+        assert_eq!(prop_value(&node, "Mfr"), None);
+
+        set_symbol_property(&mut node, "Mfr", "Texas Instruments");
+
+        assert_eq!(
+            prop_value(&node, "Mfr").as_deref(),
+            Some("Texas Instruments")
+        );
+        // Existing properties are untouched.
+        assert_eq!(extract_footprint_ref(&node).as_deref(), Some("MyLib:MyFP"));
+        // Newly appended properties are hidden on-schematic.
+        let mfr_node = node
+            .find_all("property")
+            .into_iter()
+            .find(|p| matches!(p.children.first(), Some(Child::Atom(a)) if a.text() == "Mfr"))
+            .unwrap();
+        assert!(mfr_node.find(&["effects"]).is_some());
+    }
+
+    #[test]
+    fn set_symbol_property_replaces_when_present() {
+        let mut node = sample_symbol("Widget", "MyLib:MyFP");
+        set_symbol_property(&mut node, "Mfr", "Texas Instruments");
+        set_symbol_property(&mut node, "Mfr", "Analog Devices");
+
+        assert_eq!(prop_value(&node, "Mfr").as_deref(), Some("Analog Devices"));
+        // Replacing doesn't create a second "Mfr" property.
+        assert_eq!(
+            node.find_all("property")
+                .into_iter()
+                .filter(|p| matches!(p.children.first(), Some(Child::Atom(a)) if a.text() == "Mfr"))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn set_symbol_property_does_not_touch_sub_unit_nodes() {
+        // A multi-unit symbol: the top-level `Widget` symbol contains a
+        // `Widget_1_1` sub-unit child node — `set_symbol_property` must
+        // only ever add/replace on the node it's directly given, never
+        // recurse into a nested `(symbol ...)` the way `patch_symbol_footprint`
+        // (via `walk_mut`) deliberately does.
+        let text = r#"(symbol "Widget"
+            (property "Reference" "U")
+            (symbol "Widget_1_1" (property "Footprint" "Sub:FP" (at 0 0 0))))"#;
+        let mut node = sexp::parse(text).unwrap();
+
+        set_symbol_property(&mut node, "Mfr", "Texas Instruments");
+
+        assert_eq!(
+            prop_value(&node, "Mfr").as_deref(),
+            Some("Texas Instruments")
+        );
+        let sub_unit = node
+            .find_all("symbol")
+            .into_iter()
+            .find(|n| n.name == "symbol")
+            .expect("sub-unit node should still be present");
+        assert_eq!(prop_value(sub_unit, "Mfr"), None);
     }
 
     #[test]

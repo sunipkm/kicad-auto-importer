@@ -9,6 +9,7 @@ use std::sync::mpsc;
 use egui::{Color32, RichText, Stroke};
 use egui_phosphor::regular as icon;
 use kicad_auto_importer_core::config::ImporterConfig;
+use kicad_auto_importer_core::global_settings::GlobalSettings;
 use kicad_auto_importer_core::kicad_paths::{expand_kicad_vars, kiprjmod_relative_uri};
 use kicad_auto_importer_core::library_import::CrossImportSettings;
 use kicad_auto_importer_core::watcher::{FolderWatcher, WatchEvent};
@@ -17,6 +18,7 @@ use kicad_auto_importer_core::zip_importer::{
 };
 
 use crate::library_import_ui::{self, LibraryImportState};
+use crate::part_lookup_ui::{self, PartLookupState};
 use crate::theme::{self, ACCENT, DANGER, TITLE_BAR_BG};
 use crate::tray;
 use crate::window_chrome;
@@ -37,6 +39,13 @@ pub struct MainApp {
     status: String,
 
     library_import: LibraryImportState,
+    part_lookup: PartLookupState,
+
+    /// Octopart/Nexar API credentials — global (not per-project), see
+    /// `GlobalSettings`. Loaded once at startup, saved back whenever
+    /// either field loses focus (see `update()`).
+    octopart_client_id: String,
+    octopart_client_secret: String,
 
     /// Fires whenever a second copy of the app is launched (see
     /// `single_instance`) — the window should show/focus itself.
@@ -54,6 +63,7 @@ pub struct MainApp {
 
 impl MainApp {
     pub fn new(wake_rx: mpsc::Receiver<()>, tray_icon: Option<tray_icon::TrayIcon>) -> Self {
+        let global_settings = GlobalSettings::load();
         MainApp {
             project_path: String::new(),
             watch_folder: String::new(),
@@ -68,6 +78,9 @@ impl MainApp {
             log_lines: Vec::new(),
             status: String::new(),
             library_import: LibraryImportState::default(),
+            part_lookup: PartLookupState::default(),
+            octopart_client_id: global_settings.octopart_client_id,
+            octopart_client_secret: global_settings.octopart_client_secret,
             wake_rx,
             force_quit: false,
             _tray_icon: tray_icon,
@@ -144,6 +157,93 @@ impl MainApp {
         if let Err(exc) = cfg.save(&project_dir) {
             self.log(format!("\u{2718} Could not save config: {exc}"));
         }
+    }
+
+    /// Unlike `save_config`, not tied to `project_dir()` — Octopart/Nexar
+    /// credentials are account-level, not per-project (see
+    /// `GlobalSettings`'s module docs).
+    fn save_global_settings(&mut self) {
+        let settings = GlobalSettings {
+            octopart_client_id: self.octopart_client_id.clone(),
+            octopart_client_secret: self.octopart_client_secret.clone(),
+        };
+        if let Err(exc) = settings.save() {
+            self.log(format!("\u{2718} Could not save API settings: {exc}"));
+        }
+    }
+
+    /// Same pattern as `open_library_import` just below: validate/save
+    /// the destination settings first, then open the dialog.
+    fn open_part_lookup(&mut self) {
+        if self.build_settings(false).is_none() {
+            return;
+        }
+        self.save_config();
+        self.part_lookup.open = true;
+    }
+
+    /// A single button that pops out the Octopart/Nexar Client ID/Secret
+    /// fields on click, rather than the fields themselves sitting
+    /// permanently in the main form — they're an occasional, one-time
+    /// setup step, not something touched on every run the way the
+    /// project/watch-folder fields are.
+    fn octopart_settings_button(&mut self, ui: &mut egui::Ui) {
+        let btn = ui.button(format!("{}  API Settings", icon::KEY));
+        let popup_id = ui.make_persistent_id("octopart_settings_popup");
+        if btn.clicked() {
+            ui.memory_mut(|mem| mem.toggle_popup(popup_id));
+        }
+        egui::popup::popup_below_widget(
+            ui,
+            popup_id,
+            &btn,
+            egui::popup::PopupCloseBehavior::CloseOnClickOutside,
+            |ui| {
+                ui.set_min_width(300.0);
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(icon::KEY).color(ACCENT));
+                    ui.label(RichText::new("Octopart / Nexar API").strong());
+                });
+                ui.add_space(2.0);
+                ui.label(
+                    RichText::new(
+                        "Used to look up manufacturer/Mouser/DigiKey/Arrow info \
+                         for symbols already in your library.",
+                    )
+                    .small()
+                    .weak(),
+                );
+                ui.hyperlink_to(
+                    format!(
+                        "{} Get credentials at portal.nexar.com",
+                        icon::ARROW_SQUARE_OUT
+                    ),
+                    "https://portal.nexar.com",
+                );
+                ui.add_space(6.0);
+
+                let mut settings_changed = false;
+                ui.horizontal(|ui| {
+                    ui.add_sized([90.0, 22.0], egui::Label::new("Client ID:"));
+                    let resp = ui.add_sized(
+                        [180.0, 22.0],
+                        egui::TextEdit::singleline(&mut self.octopart_client_id),
+                    );
+                    settings_changed |= resp.lost_focus();
+                });
+                ui.horizontal(|ui| {
+                    ui.add_sized([90.0, 22.0], egui::Label::new("Client Secret:"));
+                    let resp = ui.add_sized(
+                        [180.0, 22.0],
+                        egui::TextEdit::singleline(&mut self.octopart_client_secret).password(true),
+                    );
+                    settings_changed |= resp.lost_focus();
+                });
+                if settings_changed {
+                    self.save_global_settings();
+                }
+            },
+        );
     }
 
     fn build_settings(&mut self, with_watch_folder: bool) -> Option<ImportSettings> {
@@ -473,6 +573,17 @@ impl eframe::App for MainApp {
                                 })
                                 .weak(),
                             );
+                            // The status row has plenty of empty width
+                            // next to a short "Idle"/"Watching…" label —
+                            // a natural home for the (infrequently
+                            // touched) API credentials, tucked into a
+                            // popout instead of taking up permanent
+                            // vertical space among the fields used every
+                            // time.
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| self.octopart_settings_button(ui),
+                            );
                         });
                         ui.add_space(4.0);
 
@@ -543,8 +654,13 @@ impl eframe::App for MainApp {
 
                         ui.add_space(10.0);
                         ui.horizontal(|ui| {
-                            let toggle_size = egui::vec2(190.0, 44.0);
-                            let action_size = egui::vec2(180.0, 44.0);
+                            // Slightly smaller than before (was 190/180):
+                            // fitting "Populate BOM" onto this same row
+                            // as a fifth button needed a little of that
+                            // width back to avoid overflowing the
+                            // window's default size.
+                            let toggle_size = egui::vec2(175.0, 44.0);
+                            let action_size = egui::vec2(155.0, 44.0);
 
                             let toggle_resp = if watching {
                                 ui.add_sized(
@@ -602,6 +718,18 @@ impl eframe::App for MainApp {
                                 .clicked()
                             {
                                 self.open_library_import();
+                            }
+                            if ui
+                                .add_sized(
+                                    action_size,
+                                    theme::accent_button(format!(
+                                        "{}  Populate BOM",
+                                        icon::MAGNIFYING_GLASS
+                                    )),
+                                )
+                                .clicked()
+                            {
+                                self.open_part_lookup();
                             }
                         });
 
@@ -675,6 +803,15 @@ impl eframe::App for MainApp {
                 overwrite: self.overwrite,
             };
             library_import_ui::show(&mut self.library_import, ctx, &dest_settings);
+        }
+
+        if self.part_lookup.open {
+            let credentials = kicad_auto_importer_core::octopart::OctopartCredentials {
+                client_id: self.octopart_client_id.clone(),
+                client_secret: self.octopart_client_secret.clone(),
+            };
+            let project_dir = self.project_dir().unwrap_or_default();
+            part_lookup_ui::show(&mut self.part_lookup, ctx, &project_dir, &credentials);
         }
 
         window_chrome::resize_grip(ctx, "main");

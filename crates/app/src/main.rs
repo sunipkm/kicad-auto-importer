@@ -6,6 +6,7 @@ mod icon_render;
 mod library_import_ui;
 #[cfg(target_os = "linux")]
 mod linux_desktop_integration;
+mod part_lookup_ui;
 mod single_instance;
 mod theme;
 mod tray;
