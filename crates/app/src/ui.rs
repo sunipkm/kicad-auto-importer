@@ -41,11 +41,12 @@ pub struct MainApp {
     library_import: LibraryImportState,
     part_lookup: PartLookupState,
 
-    /// Octopart/Nexar API credentials — global (not per-project), see
+    /// Mouser/DigiKey API credentials — global (not per-project), see
     /// `GlobalSettings`. Loaded once at startup, saved back whenever
-    /// either field loses focus (see `update()`).
-    octopart_client_id: String,
-    octopart_client_secret: String,
+    /// any field loses focus (see `update()`).
+    mouser_api_key: String,
+    digikey_client_id: String,
+    digikey_client_secret: String,
 
     /// Fires whenever a second copy of the app is launched (see
     /// `single_instance`) — the window should show/focus itself.
@@ -79,8 +80,9 @@ impl MainApp {
             status: String::new(),
             library_import: LibraryImportState::default(),
             part_lookup: PartLookupState::default(),
-            octopart_client_id: global_settings.octopart_client_id,
-            octopart_client_secret: global_settings.octopart_client_secret,
+            mouser_api_key: global_settings.mouser_api_key,
+            digikey_client_id: global_settings.digikey_client_id,
+            digikey_client_secret: global_settings.digikey_client_secret,
             wake_rx,
             force_quit: false,
             _tray_icon: tray_icon,
@@ -159,13 +161,14 @@ impl MainApp {
         }
     }
 
-    /// Unlike `save_config`, not tied to `project_dir()` — Octopart/Nexar
+    /// Unlike `save_config`, not tied to `project_dir()` — Mouser/DigiKey
     /// credentials are account-level, not per-project (see
     /// `GlobalSettings`'s module docs).
     fn save_global_settings(&mut self) {
         let settings = GlobalSettings {
-            octopart_client_id: self.octopart_client_id.clone(),
-            octopart_client_secret: self.octopart_client_secret.clone(),
+            mouser_api_key: self.mouser_api_key.clone(),
+            digikey_client_id: self.digikey_client_id.clone(),
+            digikey_client_secret: self.digikey_client_secret.clone(),
         };
         if let Err(exc) = settings.save() {
             self.log(format!("\u{2718} Could not save API settings: {exc}"));
@@ -182,60 +185,80 @@ impl MainApp {
         self.part_lookup.open = true;
     }
 
-    /// A single button that pops out the Octopart/Nexar Client ID/Secret
+    /// A single button that pops out the Mouser/DigiKey credential
     /// fields on click, rather than the fields themselves sitting
     /// permanently in the main form — they're an occasional, one-time
     /// setup step, not something touched on every run the way the
     /// project/watch-folder fields are.
-    fn octopart_settings_button(&mut self, ui: &mut egui::Ui) {
+    fn vendor_settings_button(&mut self, ui: &mut egui::Ui) {
         let btn = ui.button(format!("{}  API Settings", icon::KEY));
-        let popup_id = ui.make_persistent_id("octopart_settings_popup");
+        let popup_id = ui.make_persistent_id("vendor_settings_popup");
         if btn.clicked() {
             ui.memory_mut(|mem| mem.toggle_popup(popup_id));
         }
-        egui::popup::popup_below_widget(
+        popup_right_aligned_below_widget(
             ui,
             popup_id,
             &btn,
             egui::popup::PopupCloseBehavior::CloseOnClickOutside,
             |ui| {
-                ui.set_min_width(300.0);
+                ui.set_min_width(440.0);
                 ui.horizontal(|ui| {
                     ui.label(RichText::new(icon::KEY).color(ACCENT));
-                    ui.label(RichText::new("Octopart / Nexar API").strong());
+                    ui.label(RichText::new("Mouser / DigiKey API").strong());
                 });
                 ui.add_space(2.0);
                 ui.label(
                     RichText::new(
-                        "Used to look up manufacturer/Mouser/DigiKey/Arrow info \
-                         for symbols already in your library.",
+                        "Used to look up manufacturer/distributor info for \
+                         symbols already in your library. Set either or both \
+                         vendors — a lookup uses whichever are configured.",
                     )
                     .small()
                     .weak(),
                 );
                 ui.hyperlink_to(
                     format!(
-                        "{} Get credentials at portal.nexar.com",
+                        "{} Get a Mouser API key at mouser.com/api-search",
                         icon::ARROW_SQUARE_OUT
                     ),
-                    "https://portal.nexar.com",
+                    "https://www.mouser.com/api-search/",
+                );
+                ui.hyperlink_to(
+                    format!(
+                        "{} Get DigiKey credentials at developer.digikey.com",
+                        icon::ARROW_SQUARE_OUT
+                    ),
+                    "https://developer.digikey.com/",
                 );
                 ui.add_space(6.0);
 
                 let mut settings_changed = false;
+                let label_width = 110.0;
                 ui.horizontal(|ui| {
-                    ui.add_sized([90.0, 22.0], egui::Label::new("Client ID:"));
+                    ui.add_sized([label_width, 22.0], egui::Label::new("Mouser Key:"));
+                    let remaining = ui.available_width();
                     let resp = ui.add_sized(
-                        [180.0, 22.0],
-                        egui::TextEdit::singleline(&mut self.octopart_client_id),
+                        [remaining, 22.0],
+                        egui::TextEdit::singleline(&mut self.mouser_api_key).password(true),
                     );
                     settings_changed |= resp.lost_focus();
                 });
                 ui.horizontal(|ui| {
-                    ui.add_sized([90.0, 22.0], egui::Label::new("Client Secret:"));
+                    ui.add_sized([label_width, 22.0], egui::Label::new("DigiKey ID:"));
+                    let remaining = ui.available_width();
                     let resp = ui.add_sized(
-                        [180.0, 22.0],
-                        egui::TextEdit::singleline(&mut self.octopart_client_secret).password(true),
+                        [remaining, 22.0],
+                        egui::TextEdit::singleline(&mut self.digikey_client_id),
+                    );
+                    settings_changed |= resp.lost_focus();
+                });
+                ui.horizontal(|ui| {
+                    ui.add_sized([label_width, 22.0], egui::Label::new("DigiKey Secret:"));
+                    let remaining = ui.available_width();
+                    let resp = ui.add_sized(
+                        [remaining, 22.0],
+                        egui::TextEdit::singleline(&mut self.digikey_client_secret).password(true),
                     );
                     settings_changed |= resp.lost_focus();
                 });
@@ -474,6 +497,70 @@ impl MainApp {
     }
 }
 
+/// Like `egui::popup::popup_below_widget`, but pins the popup's top-
+/// *right* corner under the widget's right edge instead of its left
+/// edge, so the popup grows leftward as it widens. Needed for
+/// `vendor_settings_button`: that button sits at the window's right
+/// edge, and the default left-anchored popup either clips against the
+/// window boundary or has to stay narrow to avoid it.
+///
+/// A near-copy of `egui::containers::popup::popup_above_or_below_widget`
+/// (below-only, mirrored horizontally) with one small omission: it
+/// can't register into `Context`'s internal per-layer open-popup
+/// bookkeeping, since that's a `pub(crate)` API inside egui itself.
+/// That bookkeeping only affects some nested-popup edge cases egui
+/// doesn't document further; open/close and click-outside-to-close
+/// (the behavior this app actually relies on) go through the public
+/// `Memory` popup API and work identically.
+fn popup_right_aligned_below_widget<R>(
+    ui: &egui::Ui,
+    popup_id: egui::Id,
+    widget_response: &egui::Response,
+    close_behavior: egui::popup::PopupCloseBehavior,
+    add_contents: impl FnOnce(&mut egui::Ui) -> R,
+) -> Option<R> {
+    if !ui.memory(|mem| mem.is_popup_open(popup_id)) {
+        return None;
+    }
+
+    let pos = widget_response.rect.right_bottom();
+    let pivot = egui::Align2::RIGHT_TOP;
+
+    let frame = egui::Frame::popup(ui.style());
+    let frame_margin = frame.total_margin();
+    let inner_width = widget_response.rect.width() - frame_margin.sum().x;
+
+    let response = egui::Area::new(popup_id)
+        .kind(egui::UiKind::Popup)
+        .order(egui::Order::Foreground)
+        .fixed_pos(pos)
+        .default_width(inner_width)
+        .pivot(pivot)
+        .show(ui.ctx(), |ui| {
+            frame
+                .show(ui, |ui| {
+                    ui.with_layout(egui::Layout::top_down_justified(egui::Align::LEFT), |ui| {
+                        ui.set_min_width(inner_width);
+                        add_contents(ui)
+                    })
+                    .inner
+                })
+                .inner
+        });
+
+    let should_close = match close_behavior {
+        egui::popup::PopupCloseBehavior::CloseOnClick => widget_response.clicked_elsewhere(),
+        egui::popup::PopupCloseBehavior::CloseOnClickOutside => {
+            widget_response.clicked_elsewhere() && response.response.clicked_elsewhere()
+        }
+        egui::popup::PopupCloseBehavior::IgnoreClicks => false,
+    };
+    if ui.input(|i| i.key_pressed(egui::Key::Escape)) || should_close {
+        ui.memory_mut(|mem| mem.close_popup());
+    }
+    Some(response.inner)
+}
+
 /// A labeled path field that fills all remaining horizontal space in
 /// its row (rather than a fixed width), with an optional trailing
 /// Browse button. Returns whether that button was clicked — callers
@@ -582,7 +669,7 @@ impl eframe::App for MainApp {
                             // time.
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| self.octopart_settings_button(ui),
+                                |ui| self.vendor_settings_button(ui),
                             );
                         });
                         ui.add_space(4.0);
@@ -806,9 +893,10 @@ impl eframe::App for MainApp {
         }
 
         if self.part_lookup.open {
-            let credentials = kicad_auto_importer_core::octopart::OctopartCredentials {
-                client_id: self.octopart_client_id.clone(),
-                client_secret: self.octopart_client_secret.clone(),
+            let credentials = kicad_auto_importer_core::parts_lookup::PartsCredentials {
+                mouser_api_key: self.mouser_api_key.clone(),
+                digikey_client_id: self.digikey_client_id.clone(),
+                digikey_client_secret: self.digikey_client_secret.clone(),
             };
             let project_dir = self.project_dir().unwrap_or_default();
             part_lookup_ui::show(&mut self.part_lookup, ctx, &project_dir, &credentials);

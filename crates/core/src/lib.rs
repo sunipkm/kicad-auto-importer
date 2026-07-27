@@ -5,12 +5,14 @@
 //! that knows about windows.
 
 pub mod config;
+pub mod digikey;
 pub mod footprint_importer;
 pub mod global_settings;
 pub mod kicad_paths;
 pub mod library_import;
 pub mod model_importer;
-pub mod octopart;
+pub mod mouser;
+pub mod parts_lookup;
 pub mod sexp;
 pub mod symbol_importer;
 pub mod watcher;

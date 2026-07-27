@@ -344,8 +344,8 @@ pub fn extract_footprint_ref(sym_node: &SexpNode) -> Option<String> {
 /// Sets a top-level `(property "<key>" "<value>")` on `sym_node`,
 /// replacing its value if the property already exists or appending a
 /// brand new (hidden — see below) one otherwise. Used to annotate a
-/// symbol with vendor/pricing data from an Octopart/Nexar lookup (see
-/// `crate::octopart`), but is otherwise a generic primitive any future
+/// symbol with vendor/pricing data from a Mouser/DigiKey lookup (see
+/// `crate::parts_lookup`), but is otherwise a generic primitive any future
 /// "add arbitrary metadata to a symbol" caller can reuse.
 ///
 /// Deliberately *not* built on `walk_mut` (unlike `patch_symbol_footprint`

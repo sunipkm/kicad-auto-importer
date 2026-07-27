@@ -1,7 +1,7 @@
 //! "Populate BOM" — annotate every symbol registered anywhere in the
 //! current project (not just the one destination library this app
-//! manages) with manufacturer and Mouser/DigiKey/Arrow distributor info
-//! from Octopart/Nexar (see `kicad_auto_importer_core::octopart`).
+//! manages) with manufacturer and Mouser/DigiKey distributor info (see
+//! `kicad_auto_importer_core::parts_lookup`).
 //!
 //! "Every symbol in the project" means every symbol in every library
 //! listed in the project's own *local* `sym-lib-table` — via
@@ -42,7 +42,7 @@ use egui_extras::{Column, TableBuilder};
 use egui_phosphor::regular as icon;
 
 use kicad_auto_importer_core::library_import::{load_project_symbols, SourceSymbol};
-use kicad_auto_importer_core::octopart::{self, OctopartCredentials};
+use kicad_auto_importer_core::parts_lookup::{self, PartsCredentials};
 use kicad_auto_importer_core::symbol_importer::SymbolLibrary;
 
 use crate::theme::{self, ACCENT, DANGER, OK};
@@ -170,13 +170,15 @@ impl PartLookupState {
         }
     }
 
-    fn look_up_selected(&mut self, credentials: OctopartCredentials) {
+    fn look_up_selected(&mut self, credentials: PartsCredentials) {
         if self.checked.is_empty() {
             self.status = "Select at least one symbol first.".to_string();
             return;
         }
-        if credentials.client_id.trim().is_empty() || credentials.client_secret.trim().is_empty() {
-            self.status = "Set an Octopart/Nexar Client ID and Client Secret first.".to_string();
+        let digikey_configured = !credentials.digikey_client_id.trim().is_empty()
+            && !credentials.digikey_client_secret.trim().is_empty();
+        if credentials.mouser_api_key.trim().is_empty() && !digikey_configured {
+            self.status = "Set a Mouser API key or a DigiKey Client ID/Secret first.".to_string();
             return;
         }
         self.status.clear();
@@ -216,7 +218,7 @@ impl PartLookupState {
 /// re-reading/re-writing a whole file for every single row in it.
 fn run_lookup_batch(
     selected: Vec<SelectedRow>,
-    credentials: OctopartCredentials,
+    credentials: PartsCredentials,
     tx: mpsc::Sender<LookupEvent>,
 ) {
     let send_log = |msg: String| {
@@ -264,20 +266,23 @@ fn run_lookup_batch(
                 err_count += 1;
                 continue;
             };
-            let mpn = octopart::resolve_mpn(&node, &row.name);
+            let mpn = parts_lookup::resolve_mpn(&node, &row.name);
             send_log(format!("Looking up '{}' (as '{mpn}')\u{2026}", row.name));
 
-            match octopart::lookup_part_info(&credentials, &mpn) {
+            match parts_lookup::lookup_part_info(&credentials, &mpn) {
                 Ok(info) => {
                     let vendors: Vec<&str> =
                         info.offers.iter().map(|o| o.seller.as_str()).collect();
-                    octopart::apply_part_info(&mut node, &info);
+                    for warning in &info.warnings {
+                        send_log(format!("  \u{26a0} '{}': {warning}", row.name));
+                    }
+                    parts_lookup::apply_part_info(&mut node, &info);
                     lib.add_symbol(&row.name, &node, true);
                     let summary = format!(
                         "{} \u{2014} {}",
                         info.manufacturer,
                         if vendors.is_empty() {
-                            "no Mouser/DigiKey/Arrow offers found".to_string()
+                            "no Mouser/DigiKey offers found".to_string()
                         } else {
                             vendors.join(", ")
                         }
@@ -313,7 +318,7 @@ pub fn show(
     state: &mut PartLookupState,
     ctx: &egui::Context,
     project_dir: &Path,
-    credentials: &OctopartCredentials,
+    credentials: &PartsCredentials,
 ) {
     if !state.open {
         return;

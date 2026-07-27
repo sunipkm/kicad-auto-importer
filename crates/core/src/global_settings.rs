@@ -1,12 +1,12 @@
 //! Global (not per-project) app settings — currently just the
-//! Octopart/Nexar API credentials (see `crate::octopart`).
+//! Mouser/DigiKey API credentials (see `crate::parts_lookup`).
 //!
 //! Deliberately separate from `config.rs`'s `ImporterConfig`: that one
 //! is explicitly, by design, project-scoped (see its module docs) with
 //! no global fallback location, because every one of its fields only
 //! makes sense in the context of a specific KiCad project. An API
-//! client ID/secret is an account-level credential that has nothing to
-//! do with any one project, so it lives in its own file in a genuine
+//! key/client ID/secret is an account-level credential that has nothing
+//! to do with any one project, so it lives in its own file in a genuine
 //! global location instead — `dirs::config_dir()` (`~/.config` on
 //! Linux, `~/Library/Application Support` on macOS, `%APPDATA%` on
 //! Windows), the same crate already used elsewhere in this codebase for
@@ -23,9 +23,11 @@ const SETTINGS_FILENAME: &str = "settings.json";
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct GlobalSettings {
     #[serde(default)]
-    pub octopart_client_id: String,
+    pub mouser_api_key: String,
     #[serde(default)]
-    pub octopart_client_secret: String,
+    pub digikey_client_id: String,
+    #[serde(default)]
+    pub digikey_client_secret: String,
 }
 
 impl GlobalSettings {
@@ -76,15 +78,17 @@ mod tests {
     #[test]
     fn defaults_are_empty_strings() {
         let settings = GlobalSettings::default();
-        assert_eq!(settings.octopart_client_id, "");
-        assert_eq!(settings.octopart_client_secret, "");
+        assert_eq!(settings.mouser_api_key, "");
+        assert_eq!(settings.digikey_client_id, "");
+        assert_eq!(settings.digikey_client_secret, "");
     }
 
     #[test]
     fn round_trips_through_serde() {
         let settings = GlobalSettings {
-            octopart_client_id: "some-client-id".to_string(),
-            octopart_client_secret: "some-client-secret".to_string(),
+            mouser_api_key: "some-mouser-key".to_string(),
+            digikey_client_id: "some-client-id".to_string(),
+            digikey_client_secret: "some-client-secret".to_string(),
         };
         let text = serde_json::to_string_pretty(&settings).unwrap();
         let loaded: GlobalSettings = serde_json::from_str(&text).unwrap();
