@@ -42,6 +42,19 @@ pub fn render_icon_rgba(size: u32) -> Vec<u8> {
 /// `create-dmg` to place the `.app` icon and the `Applications` alias —
 /// the usual "drag me over there" affordance, in the app's own palette
 /// instead of a generic/default-looking one.
+///
+/// Called from `icon::write_dmg_background`, in turn from `main.rs`'s
+/// `--emit-dmg-background` flag — genuinely used, just never by
+/// `build.rs`. `build.rs` pulls this whole file in via `#[path]` (see
+/// its own docs) as an entirely separate compilation from the main
+/// binary, and only ever calls `render_icon_rgba`, so on a from-scratch
+/// Windows build (where `build.rs` runs, this file included) rustc sees
+/// this function as unreachable from that compilation's own `main` and
+/// flags it dead — a real dead-code false positive caused by one source
+/// file serving two different compilation roots, not something actually
+/// unused, hence the narrow `#[allow(dead_code)]` rather than fixing
+/// the "problem" by removing the function.
+#[allow(dead_code)]
 pub fn render_dmg_background_rgba(width: u32, height: u32) -> Vec<u8> {
     let bg = bg_rgba();
     let mut rgba = vec![0u8; (width * height * 4) as usize];
