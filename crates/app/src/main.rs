@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+#![allow(unused)]
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod icon;

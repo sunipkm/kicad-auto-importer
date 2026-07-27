@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+#![allow(unused)]
 //! Core, GUI-free import pipeline for kicad-auto-importer — ported
 //! from the sibling Python KiCad plugin's `plugins/importer/*`,
 //! `plugins/watcher.py`, and `plugins/config.py`. No dependency on any
