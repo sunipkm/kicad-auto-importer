@@ -18,3 +18,4 @@ egui_extras = "0.29"
 egui-phosphor = "0.7"
 rfd = "0.15"
 ab_glyph = "0.2.32"
+image = { version = "0.25.10", default-features = false, features = ["png"] }

@@ -55,8 +55,8 @@ jobs:
             cargo build --release --target "$target" -p kicad-auto-importer
           done
 
-      - name: Package release archives (unix)
-        if: inputs.build_release && matrix.archive_ext == 'tar.gz'
+      - name: Package release archive (linux)
+        if: inputs.build_release && matrix.os == 'ubuntu-latest'
         shell: bash
         run: |
           set -euo pipefail
@@ -64,6 +64,50 @@ jobs:
             tar czf "kicad-auto-importer-$target.tar.gz" \
               -C "target/$target/release" kicad-auto-importer
           done
+
+      # macOS ships as a proper double-clickable `.app`, not a bare
+      # binary — built straight from the release binary's own
+      # `--emit-iconset` output (see `crates/app/src/icon.rs`), so the
+      # bundle's icon always matches whatever the app itself renders as
+      # its window/dock icon, with nothing to keep in sync by hand.
+      - name: Build macOS .app bundle(s)
+        if: inputs.build_release && matrix.os == 'macos-latest'
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          for target in ${{ join(matrix.targets, ' ') }}; do
+            release_dir="target/$target/release"
+            app_dir="$release_dir/KiCad Auto Importer.app"
+            mkdir -p "$app_dir/Contents/MacOS" "$app_dir/Contents/Resources"
+            cp "$release_dir/kicad-auto-importer" "$app_dir/Contents/MacOS/kicad-auto-importer"
+
+            "$release_dir/kicad-auto-importer" --emit-iconset "$release_dir/AppIcon.iconset"
+            iconutil -c icns "$release_dir/AppIcon.iconset" -o "$app_dir/Contents/Resources/AppIcon.icns"
+
+            # Built with `plutil` (preinstalled on every macOS runner)
+            # rather than a heredoc: a multi-line here-doc's closing
+            # delimiter has to sit at column zero with no leading
+            # whitespace at all, which a YAML block scalar's own
+            # indentation requirement makes impossible to satisfy here.
+            plist="$app_dir/Contents/Info.plist"
+            plutil -create xml1 "$plist"
+            plutil -insert CFBundleName -string "KiCad Auto Importer" "$plist"
+            plutil -insert CFBundleDisplayName -string "KiCad Auto Importer" "$plist"
+            plutil -insert CFBundleIdentifier -string "com.sunipkm.kicad-auto-importer" "$plist"
+            plutil -insert CFBundleVersion -string "$version" "$plist"
+            plutil -insert CFBundleShortVersionString -string "$version" "$plist"
+            plutil -insert CFBundlePackageType -string "APPL" "$plist"
+            plutil -insert CFBundleExecutable -string "kicad-auto-importer" "$plist"
+            plutil -insert CFBundleIconFile -string "AppIcon" "$plist"
+            plutil -insert CFBundleInfoDictionaryVersion -string "6.0" "$plist"
+            plutil -insert LSMinimumSystemVersion -string "11.0" "$plist"
+            plutil -insert NSHighResolutionCapable -bool true "$plist"
+
+            tar czf "kicad-auto-importer-$target.tar.gz" \
+              -C "$release_dir" "KiCad Auto Importer.app"
+          done
+
       - name: Package release archives (windows)
         if: inputs.build_release && matrix.archive_ext == 'zip'
         shell: bash

@@ -8,7 +8,27 @@ mod window_chrome;
 
 use ui::MainApp;
 
+/// Internal build-tool escape hatch, not a user-facing feature: writes
+/// the macOS `.iconset` PNGs (see `icon::write_iconset`) and exits
+/// before touching the GUI at all. CI's release packaging runs the
+/// built binary with this flag to produce the `.app` bundle's icon —
+/// there's no separate helper binary to keep in sync with `icon.rs`.
+fn emit_iconset_and_exit_if_requested() {
+    let mut args = std::env::args_os().skip(1);
+    let Some(flag) = args.next() else { return };
+    if flag != "--emit-iconset" {
+        return;
+    }
+    let dir = args
+        .next()
+        .expect("--emit-iconset requires a directory argument");
+    icon::write_iconset(std::path::Path::new(&dir)).expect("failed to write iconset");
+    std::process::exit(0);
+}
+
 fn main() -> eframe::Result<()> {
+    emit_iconset_and_exit_if_requested();
+
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([920.0, 780.0])

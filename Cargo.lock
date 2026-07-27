@@ -1982,6 +1982,7 @@ dependencies = [
  "egui",
  "egui-phosphor",
  "egui_extras",
+ "image",
  "kicad-auto-importer-core",
  "rfd",
 ]
