@@ -1,8 +1,13 @@
 [package]
-name = "kicad_auto_importer_core"
+name = "kicad-auto-importer-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+description = "GUI-free import pipeline for KiCad symbol/footprint libraries: S-expression parsing, sym-lib-table/fp-lib-table handling, and part-provider ZIP/folder import."
+readme = "../../README.md"
+keywords = ["kicad", "eda", "electronics", "footprint", "schematic"]
+categories = ["parser-implementations", "filesystem"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

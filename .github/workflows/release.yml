@@ -34,18 +34,18 @@ jobs:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
       - name: Build
-        run: cargo build --release --target ${{ matrix.target }} -p kicad_auto_importer_app
+        run: cargo build --release --target ${{ matrix.target }} -p kicad-auto-importer
 
       - name: Package (unix)
         if: matrix.archive_ext == 'tar.gz'
         run: |
           cd target/${{ matrix.target }}/release
-          tar czf ../../../kicad-auto-importer-${{ matrix.target }}.tar.gz kicad_auto_importer_app
+          tar czf ../../../kicad-auto-importer-${{ matrix.target }}.tar.gz kicad-auto-importer
       - name: Package (windows)
         if: matrix.archive_ext == 'zip'
         run: |
           cd target/${{ matrix.target }}/release
-          7z a ../../../kicad-auto-importer-${{ matrix.target }}.zip kicad_auto_importer_app.exe
+          7z a ../../../kicad-auto-importer-${{ matrix.target }}.zip kicad-auto-importer.exe
 
       - uses: actions/upload-artifact@v4
         with:

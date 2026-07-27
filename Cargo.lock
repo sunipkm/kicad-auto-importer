@@ -1974,21 +1974,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 
 [[package]]
-name = "kicad_auto_importer_app"
-version = "0.1.0"
+name = "kicad-auto-importer"
+version = "0.0.1"
 dependencies = [
  "ab_glyph",
  "eframe",
  "egui",
  "egui-phosphor",
  "egui_extras",
- "kicad_auto_importer_core",
+ "kicad-auto-importer-core",
  "rfd",
 ]
 
 [[package]]
-name = "kicad_auto_importer_core"
-version = "0.1.0"
+name = "kicad-auto-importer-core"
+version = "0.0.1"
 dependencies = [
  "dirs",
  "notify",

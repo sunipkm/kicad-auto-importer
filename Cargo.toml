@@ -3,7 +3,16 @@ resolver = "2"
 members = ["crates/core", "crates/app"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.0.1"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/sunipkm/kicad-auto-importer"
+
+# A path dependency needs a `version` too, or `cargo publish` refuses to
+# package whichever crate depends on it (there's nothing for the
+# registry to resolve to once the local path is gone). Declaring it once
+# here and inheriting via `.workspace = true` keeps that version in sync
+# with the crate's own `version.workspace = true` instead of duplicating
+# the literal "0.0.1" by hand in `crates/app/Cargo.toml`.
+[workspace.dependencies]
+kicad-auto-importer-core = { path = "crates/core", version = "0.0.1" }

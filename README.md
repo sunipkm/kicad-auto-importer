@@ -57,10 +57,10 @@ installer and no external runtime to set up.
 ### Build from source
 
 ```sh
-cargo build --release -p kicad_auto_importer_app
+cargo build --release -p kicad-auto-importer
 ```
 
-Produces a single binary at `target/release/kicad_auto_importer_app`
+Produces a single binary at `target/release/kicad-auto-importer`
 (`.exe` on Windows).
 
 ## Config file

@@ -93,7 +93,10 @@ pub fn load_project_symbols(
 /// (no sym-lib-table/project context needed) — used both by
 /// `load_project_symbols` per-library and by the dialog's "add symbols
 /// from a specific library file" escape hatch for unregistered libraries.
-pub fn load_symbols_from_file(sym_lib_path: &Path, library_label: Option<&str>) -> Vec<SourceSymbol> {
+pub fn load_symbols_from_file(
+    sym_lib_path: &Path,
+    library_label: Option<&str>,
+) -> Vec<SourceSymbol> {
     let Ok(lib) = SymbolLibrary::open(sym_lib_path) else {
         return Vec::new();
     };
@@ -123,7 +126,12 @@ fn sort_rows(rows: &mut [SourceSymbol]) {
     });
 }
 
-fn describe_symbol(name: &str, node: &SexpNode, library: &str, sym_lib_path: &Path) -> SourceSymbol {
+fn describe_symbol(
+    name: &str,
+    node: &SexpNode,
+    library: &str,
+    sym_lib_path: &Path,
+) -> SourceSymbol {
     SourceSymbol {
         library: library.to_string(),
         sym_lib_path: sym_lib_path.to_path_buf(),
@@ -339,18 +347,19 @@ pub fn import_symbols(
     for row in selected {
         let source_lib = match source_cache.entry(row.sym_lib_path.clone()) {
             std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
-            std::collections::hash_map::Entry::Vacant(e) => match SymbolLibrary::open(&row.sym_lib_path)
-            {
-                Ok(lib) => e.insert(lib),
-                Err(exc) => {
-                    log(&format!(
-                        "  \u{2718} '{}': could not open source library: {exc}",
-                        row.name
-                    ));
-                    errors += 1;
-                    continue;
+            std::collections::hash_map::Entry::Vacant(e) => {
+                match SymbolLibrary::open(&row.sym_lib_path) {
+                    Ok(lib) => e.insert(lib),
+                    Err(exc) => {
+                        log(&format!(
+                            "  \u{2718} '{}': could not open source library: {exc}",
+                            row.name
+                        ));
+                        errors += 1;
+                        continue;
+                    }
                 }
-            },
+            }
         };
 
         let Some(mut node_copy) = source_lib.get_symbol_node(&row.name) else {
@@ -375,8 +384,9 @@ pub fn import_symbols(
                 .and_then(|nick| fp_table.get(nick))
                 .and_then(|entry| find_source_footprint_file(&fp_bare, &entry.uri))
                 .or_else(|| {
-                    guess_footprint_lib_dir(&row.sym_lib_path)
-                        .and_then(|dir| find_source_footprint_file(&fp_bare, &dir.to_string_lossy()))
+                    guess_footprint_lib_dir(&row.sym_lib_path).and_then(|dir| {
+                        find_source_footprint_file(&fp_bare, &dir.to_string_lossy())
+                    })
                 });
 
             match src_fp_path {
@@ -401,12 +411,18 @@ pub fn import_symbols(
                     // past the match entirely.
                     let mut deferred_warning: Option<String> = None;
                     if !resolved_models.is_empty() {
-                        let dir_result =
-                            resolve_model_dir(&settings.project_path, &settings.model_subdir, &mut log);
+                        let dir_result = resolve_model_dir(
+                            &settings.project_path,
+                            &settings.model_subdir,
+                            &mut log,
+                        );
                         match dir_result {
                             Ok(dest_model_dir) => {
-                                let mi_result =
-                                    ModelImporter::new(&dest_model_dir, settings.overwrite, &mut log);
+                                let mi_result = ModelImporter::new(
+                                    &dest_model_dir,
+                                    settings.overwrite,
+                                    &mut log,
+                                );
                                 match mi_result {
                                     Ok(mut mi) => {
                                         model_name_map = mi.import_all(&resolved_models);
@@ -414,8 +430,9 @@ pub fn import_symbols(
                                         model_dir_for_patch = Some(dest_model_dir);
                                     }
                                     Err(exc) => {
-                                        deferred_warning =
-                                            Some(format!("Could not prepare model directory: {exc}"));
+                                        deferred_warning = Some(format!(
+                                            "Could not prepare model directory: {exc}"
+                                        ));
                                     }
                                 }
                             }
