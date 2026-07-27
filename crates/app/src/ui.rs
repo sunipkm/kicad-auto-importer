@@ -283,6 +283,26 @@ impl MainApp {
     }
 }
 
+/// A labeled path field that fills all remaining horizontal space in
+/// its row (rather than a fixed width), with an optional trailing
+/// Browse button. Returns whether that button was clicked — callers
+/// handle the actual file/folder dialog afterward, once this function's
+/// borrow of `value` has ended, so they can freely call other `&mut
+/// self` methods in response.
+fn path_row(ui: &mut egui::Ui, label: &str, value: &mut String, with_browse: bool) -> bool {
+    let mut clicked = false;
+    ui.horizontal(|ui| {
+        ui.add_sized([210.0, 22.0], egui::Label::new(label));
+        let reserved_for_button = if with_browse { 100.0 } else { 0.0 };
+        let remaining = (ui.available_width() - reserved_for_button).max(200.0);
+        ui.add_sized([remaining, 22.0], egui::TextEdit::singleline(value));
+        if with_browse && ui.button("Browse\u{2026}").clicked() {
+            clicked = true;
+        }
+    });
+    clicked
+}
+
 impl eframe::App for MainApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.drain_log_channel();
@@ -294,44 +314,34 @@ impl eframe::App for MainApp {
             ui.heading("kicad-auto-importer");
             ui.add_space(6.0);
 
-            egui::Grid::new("fields")
-                .num_columns(3)
-                .spacing([8.0, 6.0])
-                .show(ui, |ui| {
-                    ui.label("KiCad Project (.kicad_pro):");
-                    ui.add(egui::TextEdit::singleline(&mut self.project_path).desired_width(360.0));
-                    if ui.button("Browse\u{2026}").clicked() {
-                        self.browse_project();
-                    }
-                    ui.end_row();
-
-                    ui.label("Watch folder:");
-                    ui.add(egui::TextEdit::singleline(&mut self.watch_folder).desired_width(360.0));
-                    if ui.button("Browse\u{2026}").clicked() {
-                        self.browse_watch_folder();
-                    }
-                    ui.end_row();
-
-                    ui.label("Symbol library (.kicad_sym):");
-                    ui.add(egui::TextEdit::singleline(&mut self.symbol_lib).desired_width(360.0));
-                    if ui.button("Browse\u{2026}").clicked() {
-                        self.browse_symbol_lib();
-                    }
-                    ui.end_row();
-
-                    ui.label("Footprint library (.pretty):");
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.footprint_lib).desired_width(360.0),
-                    );
-                    if ui.button("Browse\u{2026}").clicked() {
-                        self.browse_footprint_lib();
-                    }
-                    ui.end_row();
-
-                    ui.label("3-D model subfolder:");
-                    ui.add(egui::TextEdit::singleline(&mut self.model_subdir).desired_width(360.0));
-                    ui.end_row();
-                });
+            if path_row(
+                ui,
+                "KiCad Project (.kicad_pro):",
+                &mut self.project_path,
+                true,
+            ) {
+                self.browse_project();
+            }
+            if path_row(ui, "Watch folder:", &mut self.watch_folder, true) {
+                self.browse_watch_folder();
+            }
+            if path_row(
+                ui,
+                "Symbol library (.kicad_sym):",
+                &mut self.symbol_lib,
+                true,
+            ) {
+                self.browse_symbol_lib();
+            }
+            if path_row(
+                ui,
+                "Footprint library (.pretty):",
+                &mut self.footprint_lib,
+                true,
+            ) {
+                self.browse_footprint_lib();
+            }
+            path_row(ui, "3-D model subfolder:", &mut self.model_subdir, false);
             ui.label(
                 egui::RichText::new("Relative to the project directory (${KIPRJMOD}).")
                     .small()
@@ -390,13 +400,19 @@ impl eframe::App for MainApp {
                     self.log_lines.clear();
                 }
             });
+            // Fill whatever vertical space is left in the window, rather
+            // than a fixed height — everything above this point has
+            // already claimed its space for this frame, so
+            // `available_height()` here is exactly the remainder.
+            let remaining_height = ui.available_height().max(100.0);
             egui::ScrollArea::vertical()
-                .max_height(260.0)
+                .max_height(remaining_height)
                 .stick_to_bottom(true)
                 .show(ui, |ui| {
                     ui.add(
                         egui::TextEdit::multiline(&mut self.log_lines.join("\n"))
                             .desired_width(f32::INFINITY)
+                            .desired_rows(20)
                             .font(egui::TextStyle::Monospace)
                             .interactive(false),
                     );
