@@ -37,6 +37,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread;
 
+use chrono::TimeZone;
 use egui::{Color32, RichText};
 use egui_extras::{Column, TableBuilder};
 use egui_phosphor::regular as icon;
@@ -395,12 +396,14 @@ fn save_stock_report(
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| project_dir.display().to_string());
-    let unix_secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+    let now = chrono::Utc::now();
+    let unix_secs = now.timestamp() as _;
     let generated_at = bom_report::format_utc_timestamp(unix_secs);
-    let out_path = project_dir.join("bom_stock_report.pdf");
+    let out_path = project_dir.join(format!(
+        "{}_stock_report_{}.pdf",
+        project_name.replace(' ', "_"),
+        now.format("%Y%m%d_%H%M%S")
+    ));
 
     match bom_report::generate(&rows, &project_name, &generated_at, &out_path) {
         Ok(()) => send_log(format!("Stock report saved to '{}'.", out_path.display())),

@@ -146,28 +146,43 @@ impl MainApp {
         PathBuf::from(expanded)
     }
 
+    /// Always assigns every field from whatever `ImporterConfig::load`
+    /// returns for `project_dir` — including the watch folder/library
+    /// fields, which used to be skipped when the loaded value was empty.
+    /// That was meant to avoid clobbering something the user had just
+    /// typed, but this function is only ever called when *switching to*
+    /// a project (app startup restore, or picking a new `.kicad_pro` in
+    /// `browse_project`), never while editing — so a project with no
+    /// settings file yet must land on a blank slate, not silently
+    /// inherit the *previous* project's symbol/footprint library paths.
+    /// Leaving those stale was actively dangerous: `${KIPRJMOD}`-relative
+    /// paths re-resolve against the new project directory, so clicking
+    /// "Start Watching" without noticing would create a library file
+    /// named after the old project, inside the new one.
     fn load_config_for_current_project(&mut self) {
         let Some(project_dir) = self.project_dir() else {
             return;
         };
+        let has_settings_file = ImporterConfig::config_path(&project_dir).is_file();
         let cfg = ImporterConfig::load(&project_dir);
-        if !cfg.watch_folder.is_empty() {
-            self.watch_folder = cfg.watch_folder;
-        }
-        if !cfg.symbol_lib.is_empty() {
-            self.symbol_lib = cfg.symbol_lib;
-        }
-        if !cfg.footprint_lib.is_empty() {
-            self.footprint_lib = cfg.footprint_lib;
-        }
+        self.watch_folder = cfg.watch_folder;
+        self.symbol_lib = cfg.symbol_lib;
+        self.footprint_lib = cfg.footprint_lib;
         self.model_subdir = cfg.model_subdir;
         self.move_zip = cfg.move_zip;
         self.backup_zip = cfg.backup_zip;
         self.overwrite = cfg.overwrite;
-        self.log(format!(
-            "Loaded settings for project '{}'.",
-            project_dir.display()
-        ));
+        if has_settings_file {
+            self.log(format!(
+                "Loaded settings for project '{}'.",
+                project_dir.display()
+            ));
+        } else {
+            self.log(format!(
+                "No settings file yet for project '{}' \u{2014} using blank defaults.",
+                project_dir.display()
+            ));
+        }
     }
 
     fn save_config(&mut self) {

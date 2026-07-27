@@ -18,7 +18,11 @@ egui_extras = "0.29"
 egui-phosphor = "0.7"
 rfd = "0.15"
 ab_glyph = "0.2.32"
-image = { version = "0.25.10", default-features = false, features = ["png", "ico"] }
+image = { version = "0.25.10", default-features = false, features = [
+    "png",
+    "ico",
+] }
+chrono = { version = "0.4" }
 # `libxdo` (tray-icon's default) is only needed for the predefined
 # Copy/Cut/Paste/Select-All menu items, which this app's tray menu
 # doesn't use — skipping it avoids a `libxdo-dev` build dependency on
@@ -35,5 +39,8 @@ tempfile = "3"
 [target."cfg(windows)".build-dependencies]
 ab_glyph = "0.2.32"
 egui-phosphor = "0.7"
-image = { version = "0.25.10", default-features = false, features = ["png", "ico"] }
+image = { version = "0.25.10", default-features = false, features = [
+    "png",
+    "ico",
+] }
 winresource = "0.1.31"
