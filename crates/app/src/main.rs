@@ -4,6 +4,8 @@ mod icon;
 mod icon_colors;
 mod icon_render;
 mod library_import_ui;
+#[cfg(target_os = "linux")]
+mod linux_desktop_integration;
 mod theme;
 mod ui;
 mod window_chrome;
@@ -30,6 +32,9 @@ fn emit_iconset_and_exit_if_requested() {
 
 fn main() -> eframe::Result<()> {
     emit_iconset_and_exit_if_requested();
+
+    #[cfg(target_os = "linux")]
+    linux_desktop_integration::spawn_registration();
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()

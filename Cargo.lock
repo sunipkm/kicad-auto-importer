@@ -1985,6 +1985,7 @@ dependencies = [
  "image",
  "kicad-auto-importer-core",
  "rfd",
+ "tempfile",
  "winresource",
 ]
 

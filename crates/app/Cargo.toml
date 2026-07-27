@@ -20,6 +20,9 @@ rfd = "0.15"
 ab_glyph = "0.2.32"
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 
+[target."cfg(target_os = \"linux\")".dev-dependencies]
+tempfile = "3"
+
 [target."cfg(windows)".build-dependencies]
 ab_glyph = "0.2.32"
 egui-phosphor = "0.7"
