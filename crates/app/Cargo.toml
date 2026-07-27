@@ -6,3 +6,6 @@ license.workspace = true
 
 [dependencies]
 kicad_auto_importer_core = { path = "../core" }
+eframe = "0.29"
+egui = "0.29"
+rfd = "0.15"

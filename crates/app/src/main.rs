@@ -1,11 +1,17 @@
-//! Placeholder binary — proves `app` links against `core` correctly.
-//!
-//! The real egui/eframe front-end (Phase 5 of the project plan) is not
-//! yet implemented; this crate currently exists only so
-//! `cargo build --workspace` / `cargo test --workspace` exercise both
-//! crates while `core` (the sexp/import-pipeline/watcher logic) is
-//! being built out and verified first.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-fn main() {
-    println!("kicad-auto-importer core is wired up; GUI front-end not implemented yet.");
+mod ui;
+
+use ui::MainApp;
+
+fn main() -> eframe::Result<()> {
+    let options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default().with_inner_size([720.0, 640.0]),
+        ..Default::default()
+    };
+    eframe::run_native(
+        "kicad-auto-importer",
+        options,
+        Box::new(|_cc| Ok(Box::new(MainApp::default()))),
+    )
 }
