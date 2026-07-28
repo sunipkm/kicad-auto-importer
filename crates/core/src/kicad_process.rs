@@ -1,0 +1,206 @@
+//! Best-effort, cross-platform detection of whether a given KiCad
+//! project directory is currently open in a live KiCad process (the
+//! project manager, schematic editor, or PCB editor) — used by
+//! `part_lookup_ui`'s "Populate BOM" to avoid writing straight to a
+//! `.kicad_sch` file on disk while KiCad itself already has that project
+//! loaded in memory: a write we make there is invisible to KiCad's own
+//! copy, and gets silently clobbered the next time the user hits Save
+//! inside KiCad.
+//!
+//! Built on the `sysinfo` crate rather than hand-rolled per-OS process
+//! introspection (`/proc` parsing on Linux, PEB-reading FFI on Windows),
+//! since it already covers Linux/Windows/macOS through one API. For
+//! every live process whose name matches one of KiCad's own editor
+//! binaries (`kicad`, `eeschema`, `pcbnew`), two independent signals are
+//! checked for whether it's pointed at the target project directory:
+//!
+//! 1. The process's working directory (`Process::cwd`) — KiCad's own
+//!    processes set this to the project directory on launch (verified
+//!    empirically against real `kicad`/`eeschema` processes).
+//! 2. Its command-line arguments (`Process::cmd`) — KiCad's project
+//!    manager launches its editor sub-processes as
+//!    `kicad <path>.kicad_pro` / `eeschema <path>.kicad_sch`, so any
+//!    argument that canonicalizes to a path equal to or inside the
+//!    project directory counts too. `sysinfo` documents that this can
+//!    require administrator privileges on Windows, so it's a secondary
+//!    signal, not the only one.
+//!
+//! If neither signal is available (permissions, an unsupported platform,
+//! or KiCad simply isn't running), [`project_open_in_kicad`] reports
+//! `false` — a fail-open default. This is a best-effort safety net, not
+//! a guarantee: it never makes Populate BOM refuse to write when it
+//! otherwise would have.
+
+use std::ffi::OsString;
+use std::path::Path;
+
+use sysinfo::System;
+
+/// KiCad's own editor process names — case-insensitive, `.exe` stripped
+/// (see [`is_kicad_process_name`]).
+const KICAD_PROCESS_NAMES: [&str; 3] = ["kicad", "eeschema", "pcbnew"];
+
+/// Whether any live `kicad`/`eeschema`/`pcbnew` process appears to have
+/// `project_dir` open, per the two signals described in the module docs.
+pub fn project_open_in_kicad(project_dir: &Path) -> bool {
+    let Ok(project_dir_canon) = std::fs::canonicalize(project_dir) else {
+        return false;
+    };
+
+    let system = System::new_all();
+    system.processes().values().any(|process| {
+        let name = process.name().to_string_lossy();
+        is_kicad_process_name(&name)
+            && process_targets_project(process.cwd(), process.cmd(), &project_dir_canon)
+    })
+}
+
+/// Matches KiCad's own editor binary names, case-insensitively and with
+/// a trailing `.exe` stripped (Windows). Linux truncates `Process::name`
+/// to 15 characters, which doesn't affect any of these — all under that
+/// limit already.
+fn is_kicad_process_name(name: &str) -> bool {
+    let stem = name.strip_suffix(".exe").unwrap_or(name);
+    KICAD_PROCESS_NAMES
+        .iter()
+        .any(|candidate| candidate.eq_ignore_ascii_case(stem))
+}
+
+/// Pure decision function, deliberately separated from the live
+/// `sysinfo` scan above so it's directly unit-testable without spawning
+/// real processes — same split as `digikey::cached_token_is_valid` vs.
+/// `get_token`. `project_dir_canon` must already be canonicalized by the
+/// caller; `cwd` and each `cmd` argument are canonicalized here since
+/// they come straight from the OS and may not be.
+fn process_targets_project(cwd: Option<&Path>, cmd: &[OsString], project_dir_canon: &Path) -> bool {
+    if let Some(cwd) = cwd {
+        if std::fs::canonicalize(cwd).is_ok_and(|cwd| cwd == project_dir_canon) {
+            return true;
+        }
+    }
+    cmd.iter().any(|arg| {
+        std::fs::canonicalize(arg)
+            .map(|arg| arg.starts_with(project_dir_canon))
+            .unwrap_or(false)
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn cmd(args: &[&str]) -> Vec<OsString> {
+        args.iter().map(OsString::from).collect()
+    }
+
+    // ── is_kicad_process_name ────────────────────────────────────────
+
+    #[test]
+    fn matches_kicad_family_names_case_insensitively() {
+        assert!(is_kicad_process_name("kicad"));
+        assert!(is_kicad_process_name("KiCad"));
+        assert!(is_kicad_process_name("eeschema"));
+        assert!(is_kicad_process_name("EESchema"));
+        assert!(is_kicad_process_name("pcbnew"));
+    }
+
+    #[test]
+    fn strips_a_trailing_exe_suffix() {
+        assert!(is_kicad_process_name("kicad.exe"));
+        assert!(is_kicad_process_name("eeschema.exe"));
+        assert!(is_kicad_process_name("pcbnew.exe"));
+    }
+
+    #[test]
+    fn rejects_unrelated_process_names() {
+        assert!(!is_kicad_process_name("firefox"));
+        assert!(!is_kicad_process_name("kicad-cli"));
+        assert!(!is_kicad_process_name(""));
+    }
+
+    // ── process_targets_project ──────────────────────────────────────
+
+    #[test]
+    fn matches_when_cwd_is_the_project_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let project_dir = std::fs::canonicalize(dir.path()).unwrap();
+        assert!(process_targets_project(Some(dir.path()), &[], &project_dir));
+    }
+
+    #[test]
+    fn matches_when_a_cmd_argument_is_the_kicad_pro_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let project_dir = std::fs::canonicalize(dir.path()).unwrap();
+        let pro_file = dir.path().join("widget.kicad_pro");
+        std::fs::write(&pro_file, "").unwrap();
+
+        assert!(process_targets_project(
+            None,
+            &cmd(&["/usr/bin/kicad", pro_file.to_str().unwrap()]),
+            &project_dir
+        ));
+    }
+
+    #[test]
+    fn matches_when_a_cmd_argument_is_a_schematic_inside_the_project_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let project_dir = std::fs::canonicalize(dir.path()).unwrap();
+        let sch_file = dir.path().join("widget.kicad_sch");
+        std::fs::write(&sch_file, "").unwrap();
+
+        assert!(process_targets_project(
+            None,
+            &cmd(&["/usr/bin/eeschema", sch_file.to_str().unwrap()]),
+            &project_dir
+        ));
+    }
+
+    #[test]
+    fn does_not_match_a_different_project_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let project_dir = std::fs::canonicalize(dir.path()).unwrap();
+        let other_dir = tempfile::tempdir().unwrap();
+
+        assert!(!process_targets_project(
+            Some(other_dir.path()),
+            &cmd(&["/usr/bin/kicad", "/etc/hostname"]),
+            &project_dir
+        ));
+    }
+
+    #[test]
+    fn no_cwd_and_no_matching_cmd_argument_is_not_a_match() {
+        let project_dir = PathBuf::from("/nonexistent/project/dir");
+        assert!(!process_targets_project(
+            None,
+            &cmd(&["sleep", "5"]),
+            &project_dir
+        ));
+    }
+
+    #[test]
+    fn unresolvable_paths_do_not_panic_and_are_not_a_match() {
+        let project_dir = PathBuf::from("/nonexistent/project/dir");
+        assert!(!process_targets_project(
+            Some(Path::new("/also/nonexistent")),
+            &cmd(&["/also/nonexistent/widget.kicad_pro"]),
+            &project_dir
+        ));
+    }
+
+    // ── project_open_in_kicad ────────────────────────────────────────
+
+    #[test]
+    fn reports_closed_for_a_directory_no_live_kicad_process_has_open() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!project_open_in_kicad(dir.path()));
+    }
+
+    #[test]
+    fn reports_closed_for_a_nonexistent_directory() {
+        assert!(!project_open_in_kicad(Path::new(
+            "/nonexistent/project/dir"
+        )));
+    }
+}
