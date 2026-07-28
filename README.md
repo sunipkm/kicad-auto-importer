@@ -118,16 +118,15 @@ are stored separately from any single project's own settings — see
 
 ### Download a release
 
-Prebuilt binaries for Linux, macOS (Intel and Apple Silicon), and
-Windows are published on the
+Prebuilt binaries for Linux, macOS (Apple Silicon), and Windows are
+published on the
 [Releases page](https://github.com/sunipkm/kicad-auto-importer/releases/latest):
 
 | Platform             | Artifact                                         | Contains |
 | -------------------- | ------------------------------------------------- | -------- |
 | Windows (x86_64)     | `kicad-auto-importer-x86_64-pc-windows-msvc.zip`   | An NSIS installer (`KiCadAutoImporter-Setup-*.exe`) — per-user install, no admin/UAC prompt, Start Menu shortcut, and a proper uninstaller. |
 | Linux (x86_64)       | `kicad-auto-importer-x86_64-unknown-linux-gnu.tar.gz` | The bare binary. |
-| macOS (Intel)        | `kicad-auto-importer-x86_64-apple-darwin.dmg`   | A `.dmg` — the usual drag-`KiCad Auto Importer.app`-onto-Applications installer. |
-| macOS (Apple Silicon) | `kicad-auto-importer-aarch64-apple-darwin.dmg` | Same as above. |
+| macOS (Apple Silicon) | `kicad-auto-importer-aarch64-apple-darwin.dmg` | A `.dmg` — the usual drag-`KiCad Auto Importer.app`-onto-Applications installer. |
 
 On Windows, running the installer contained in the zip completes setup.
 On macOS, opening the `.dmg` and dragging the application to
@@ -137,6 +136,22 @@ requires GTK3 and libayatana-appindicator (or libappindicator), which is
 standard on most desktop distributions; e.g. on Debian/Ubuntu:
 `sudo apt install libgtk-3-0 libayatana-appindicator3-1`.
 
+### Install with cargo
+
+Not published on crates.io, but installable straight from the
+repository with a Rust toolchain already set up. On Linux, the tray
+icon's build dependencies must be installed first:
+`sudo apt install libgtk-3-dev libayatana-appindicator3-dev` (Debian/Ubuntu;
+`gtk3 libappindicator-gtk3` or `libayatana-appindicator` on Arch/Manjaro).
+
+```sh
+cargo install --locked kicad-auto-importer
+```
+
+This installs the `kicad-auto-importer` binary to cargo's bin
+directory (`~/.cargo/bin` by default), which should already be on
+`PATH` if cargo itself is.
+
 ### Build from source
 
 On Linux, the tray icon's build dependencies must be installed first:
@@ -144,6 +159,8 @@ On Linux, the tray icon's build dependencies must be installed first:
 `gtk3 libappindicator-gtk3` or `libayatana-appindicator` on Arch/Manjaro).
 
 ```sh
+git clone https://github.com/sunipkm/kicad-auto-importer
+cd kicad-auto-importer
 cargo build --release -p kicad-auto-importer
 ```
 

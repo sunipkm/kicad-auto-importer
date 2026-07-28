@@ -21,12 +21,12 @@ jobs:
             targets: [x86_64-unknown-linux-gnu]
             archive_ext: tar.gz
           - os: macos-latest
-            # One job, both Apple targets: `cargo test` only runs the
-            # native one (you can't execute a foreign-arch test binary
-            # without emulation), but Xcode's toolchain cross-compiles
-            # `--release` for the other one with no extra setup, so both
-            # release archives still come out of this single job.
-            targets: [x86_64-apple-darwin, aarch64-apple-darwin]
+            # Apple Silicon only — unsigned x86_64 builds aren't worth
+            # shipping since Gatekeeper on Apple Silicon Macs marks even
+            # the *native* aarch64 build "damaged" without a paid
+            # Developer ID signature/notarization, and Intel Macs are a
+            # shrinking minority besides.
+            targets: [aarch64-apple-darwin]
             archive_ext: dmg
           - os: windows-latest
             targets: [x86_64-pc-windows-msvc]
@@ -126,13 +126,9 @@ jobs:
           set -euo pipefail
           brew install create-dmg
 
-          # The background is target-independent, so it's rendered once
-          # rather than per-target — from the aarch64 binary specifically
-          # since that's what actually runs natively on this runner
-          # (arm64), no Rosetta needed just for a build-tool escape
-          # hatch. Keep --window-size/--icon-size/the icon coordinates
-          # below in sync with `icon::DMG_WINDOW_SIZE` in
-          # crates/app/src/icon.rs, which this same image is rendered by.
+          # Keep --window-size/--icon-size/the icon coordinates below in
+          # sync with `icon::DMG_WINDOW_SIZE` in crates/app/src/icon.rs,
+          # which this same image is rendered by.
           background_bin="target/aarch64-apple-darwin/release/kicad-auto-importer"
           "$background_bin" --emit-dmg-background dmg-background.png
 
@@ -164,9 +160,15 @@ jobs:
       # An NSIS installer rather than a bare `.exe`: Start Menu shortcut,
       # an uninstaller Add/Remove Programs can find, and a proper
       # install location — see packaging/windows/installer.nsi for why
-      # it's a per-user (no admin/UAC) install. `makensis` is
-      # preinstalled on `windows-latest`, so no extra setup step is
-      # needed to get it, unlike `create-dmg` above.
+      # it's a per-user (no admin/UAC) install. Unlike the older
+      # windows-2022 image, windows-2025 (what `windows-latest` now
+      # points to) dropped NSIS from its preinstalled software
+      # (actions/runner-images#11754), so `makensis` needs an explicit
+      # install here.
+      - name: Install NSIS
+        if: inputs.build_release && matrix.os == 'windows-latest'
+        run: choco install nsis -y --no-progress
+
       - name: Package Windows installer(s)
         if: inputs.build_release && matrix.os == 'windows-latest'
         shell: bash
