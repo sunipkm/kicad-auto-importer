@@ -45,10 +45,31 @@ enum Claim {
     Unavailable(io::Error),
 }
 
+/// Whether `err` (from `ListenerOptions::create_sync()`) means "this name
+/// is already claimed by a live listener," across platforms.
+///
+/// On Unix this is always `AddrInUse`. On Windows it's `PermissionDenied`
+/// instead: `interprocess` always creates its named-pipe listeners with
+/// `FILE_FLAG_FIRST_PIPE_INSTANCE` set (see its
+/// `os::windows::named_pipe::listener::create_instance` — every call
+/// passes `first: true`), and per `CreateNamedPipeW`'s own documented
+/// behavior, colliding with an existing instance under that flag fails
+/// with `ERROR_ACCESS_DENIED`, which Rust's std maps to
+/// `PermissionDenied`, not `AddrInUse` — confirmed by a real Windows CI
+/// failure where this branch's `AddrInUse`-only check let a second claim
+/// on the same name fall through to `Claim::Unavailable` instead of
+/// being recognized as `Claim::Secondary`.
+fn is_name_collision(err: &io::Error) -> bool {
+    if err.kind() == io::ErrorKind::AddrInUse {
+        return true;
+    }
+    cfg!(windows) && err.kind() == io::ErrorKind::PermissionDenied
+}
+
 fn try_claim(name: Name<'_>) -> Claim {
     match ListenerOptions::new().name(name.clone()).create_sync() {
         Ok(listener) => Claim::Primary(listener),
-        Err(err) if err.kind() == io::ErrorKind::AddrInUse => {
+        Err(err) if is_name_collision(&err) => {
             if try_wake(name.clone()) {
                 Claim::Secondary
             } else {
@@ -58,8 +79,9 @@ fn try_claim(name: Name<'_>) -> Claim {
                 // falls back to a real filesystem path — Linux's
                 // abstract socket namespace and Windows named pipes are
                 // both kernel-managed and released the moment their
-                // owning process dies, so `AddrInUse` there always means
-                // a live listener and `try_wake` above always succeeds.
+                // owning process dies, so a collision there (see
+                // `is_name_collision`) always means a live listener and
+                // `try_wake` above always succeeds.
                 // Passing `try_overwrite` here (rather than on the first
                 // attempt) is safe specifically because the failed
                 // connect just confirmed no live listener holds it.
