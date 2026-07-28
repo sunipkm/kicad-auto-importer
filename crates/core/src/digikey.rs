@@ -16,7 +16,9 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
-use crate::parts_lookup::{format_price_breaks, is_lifecycle_concern, StockStatus};
+use crate::parts_lookup::{
+    format_price_breaks, is_lifecycle_concern, richer_description, StockStatus,
+};
 
 const TOKEN_URL: &str = "https://api.digikey.com/v1/oauth2/token";
 const SEARCH_URL: &str = "https://api.digikey.com/products/v4/search/keyword";
@@ -37,6 +39,10 @@ pub struct DigikeyCredentials {
 pub struct DigikeyPart {
     pub manufacturer: String,
     pub mpn: String,
+    /// The richer (see [`richer_description`]) of DigiKey's own
+    /// `Description.DetailedDescription` and
+    /// `Description.ProductDescription` — empty if DigiKey sent neither.
+    pub description: String,
     pub url: String,
     pub sku: String,
     pub price_summary: String,
@@ -203,12 +209,28 @@ struct RawProduct {
     quantity_available: u64,
     #[serde(rename = "ProductStatus", default)]
     product_status: Option<RawProductStatus>,
+    #[serde(rename = "Description", default)]
+    description: Option<RawDescription>,
 }
 
 #[derive(Deserialize)]
 struct RawProductStatus {
     #[serde(rename = "Status", default)]
     status: String,
+}
+
+/// DigiKey splits its description into two independent strings rather
+/// than one — `ProductDescription` is a terse catalog blurb (e.g. "IC
+/// OPAMP GP 2 CIRCUIT 8DIP"), `DetailedDescription` is usually longer
+/// and more human-readable (e.g. "Standard (General Purpose) Amplifier
+/// 2 Circuit 8-PDIP"). [`richer_description`] picks between them the
+/// same way it later picks between vendors.
+#[derive(Deserialize)]
+struct RawDescription {
+    #[serde(rename = "ProductDescription", default)]
+    product_description: String,
+    #[serde(rename = "DetailedDescription", default)]
+    detailed_description: String,
 }
 
 #[derive(Deserialize)]
@@ -307,6 +329,10 @@ fn parse_search_response(text: &str, mpn: &str) -> Result<DigikeyPart, DigikeyEr
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "Unknown".to_string());
     let lifecycle_concern = is_lifecycle_concern(&lifecycle_summary);
+    let description = product
+        .description
+        .map(|d| richer_description(&d.detailed_description, &d.product_description).to_string())
+        .unwrap_or_default();
 
     Ok(DigikeyPart {
         manufacturer: product.manufacturer.map(|m| m.name).unwrap_or_default(),
@@ -315,6 +341,7 @@ fn parse_search_response(text: &str, mpn: &str) -> Result<DigikeyPart, DigikeyEr
         } else {
             product.manufacturer_product_number
         },
+        description,
         url: product.product_url,
         sku,
         price_summary: format_price_breaks(&breaks),
@@ -335,6 +362,10 @@ mod tests {
         "Products": [{
             "ManufacturerProductNumber": "LM358P",
             "Manufacturer": { "Name": "Texas Instruments" },
+            "Description": {
+                "ProductDescription": "IC OPAMP GP 2 CIRCUIT 8DIP",
+                "DetailedDescription": "Standard (General Purpose) Amplifier 2 Circuit 8-PDIP"
+            },
             "ProductUrl": "https://www.digikey.com/lm358p",
             "ProductVariations": [{
                 "DigiKeyProductNumber": "296-1395-5-ND",
@@ -426,6 +457,41 @@ mod tests {
         let part = parse_search_response(text, "X").unwrap();
         assert_eq!(part.lifecycle_summary, "Unknown");
         assert!(!part.lifecycle_concern);
+    }
+
+    // ── description ───────────────────────────────────────────────────
+
+    #[test]
+    fn picks_the_richer_of_detailed_and_product_description() {
+        let part = parse_search_response(FIXTURE, "LM358P").unwrap();
+        assert_eq!(
+            part.description,
+            "Standard (General Purpose) Amplifier 2 Circuit 8-PDIP"
+        );
+    }
+
+    #[test]
+    fn falls_back_to_product_description_when_detailed_is_shorter() {
+        let text = r#"{"Products": [{
+            "ManufacturerProductNumber": "X", "ProductUrl": "",
+            "ProductVariations": [], "QuantityAvailable": 0,
+            "Description": {
+                "ProductDescription": "IC OPAMP GP 2 CIRCUIT 8DIP",
+                "DetailedDescription": ""
+            }
+        }]}"#;
+        let part = parse_search_response(text, "X").unwrap();
+        assert_eq!(part.description, "IC OPAMP GP 2 CIRCUIT 8DIP");
+    }
+
+    #[test]
+    fn missing_description_is_empty_not_an_error() {
+        let text = r#"{"Products": [{
+            "ManufacturerProductNumber": "X", "ProductUrl": "",
+            "ProductVariations": [], "QuantityAvailable": 0
+        }]}"#;
+        let part = parse_search_response(text, "X").unwrap();
+        assert_eq!(part.description, "");
     }
 
     // ── token cache ──────────────────────────────────────────────────

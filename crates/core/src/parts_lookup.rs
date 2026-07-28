@@ -82,6 +82,9 @@ pub struct VendorOffer {
 pub struct PartInfo {
     pub manufacturer: String,
     pub mpn: String,
+    /// The richer (see [`richer_description`]) of whichever matched
+    /// vendors reported a description — empty if neither did.
+    pub description: String,
     pub offers: Vec<VendorOffer>,
     /// A message per *configured* vendor that failed (e.g. `"DigiKey:
     /// no match found for 'LM358'"`), even though the overall lookup
@@ -130,6 +133,23 @@ pub(crate) fn is_lifecycle_concern(status_text: &str) -> bool {
     LIFECYCLE_CONCERN_KEYWORDS
         .iter()
         .any(|keyword| lower.contains(keyword))
+}
+
+/// Picks whichever of two description strings carries more actual
+/// content, measured by non-whitespace character count rather than raw
+/// length — so a padded-with-spaces string can't out-rank a denser one.
+/// Ties (including both empty) keep `a`. Shared by two call sites:
+/// DigiKey's own `DetailedDescription` vs. `ProductDescription`
+/// (`digikey::parse_search_response`), and the final pick between
+/// Mouser's and DigiKey's descriptions (`combine_results` below) — same
+/// rule both times, so neither vendor structurally has the edge.
+pub(crate) fn richer_description<'a>(a: &'a str, b: &'a str) -> &'a str {
+    let non_whitespace_count = |s: &str| s.chars().filter(|c| !c.is_whitespace()).count();
+    if non_whitespace_count(b) > non_whitespace_count(a) {
+        b
+    } else {
+        a
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -194,6 +214,7 @@ fn combine_results(
 
     let mut manufacturer = String::new();
     let mut resolved_mpn = mpn.to_string();
+    let mut description = String::new();
     let mut offers = Vec::new();
     let mut warnings = Vec::new();
 
@@ -206,6 +227,7 @@ fn combine_results(
                 if !part.mpn.is_empty() {
                     resolved_mpn = part.mpn;
                 }
+                description = richer_description(&description, &part.description).to_string();
                 offers.push(VendorOffer {
                     seller: "Mouser".to_string(),
                     url: part.url,
@@ -231,6 +253,7 @@ fn combine_results(
                 if !part.mpn.is_empty() {
                     resolved_mpn = part.mpn;
                 }
+                description = richer_description(&description, &part.description).to_string();
                 offers.push(VendorOffer {
                     seller: "DigiKey".to_string(),
                     url: part.url,
@@ -254,20 +277,30 @@ fn combine_results(
     Ok(PartInfo {
         manufacturer,
         mpn: resolved_mpn,
+        description,
         offers,
         warnings,
     })
 }
 
-/// Writes `info` onto `sym_node` as `Mfr`/`Mfr #` plus, per matched
-/// vendor, `<Vendor>` (URL) / `<Vendor> #` (SKU) / `<Vendor> Qty/Price` /
-/// `<Vendor> Stock` / `<Vendor> Lifecycle` (and `<Vendor> Replacement`
-/// when the vendor suggested one). Re-running a lookup overwrites these
-/// in place — see `set_symbol_property`'s docs for why that's the right
-/// default here.
+/// Writes `info` onto `sym_node` as `Mfr`/`Mfr #`/`Vendor Description`
+/// plus, per matched vendor, `<Vendor>` (URL) / `<Vendor> #` (SKU) /
+/// `<Vendor> Qty/Price` / `<Vendor> Stock` / `<Vendor> Lifecycle` (and
+/// `<Vendor> Replacement` when the vendor suggested one). Re-running a
+/// lookup overwrites these in place — see `set_symbol_property`'s docs
+/// for why that's the right default here.
+///
+/// `Vendor Description` is deliberately a new property, not a rewrite of
+/// the symbol's own pre-existing `Description` — that one is whatever
+/// the KiCad library symbol already carries (and is what the Populate
+/// BOM table shows), and clobbering it with vendor catalog text would
+/// silently change something no other part of this write-back touches.
 pub fn apply_part_info(sym_node: &mut SexpNode, info: &PartInfo) {
     set_symbol_property(sym_node, "Mfr", &info.manufacturer);
     set_symbol_property(sym_node, "Mfr #", &info.mpn);
+    if !info.description.is_empty() {
+        set_symbol_property(sym_node, "Vendor Description", &info.description);
+    }
     for offer in &info.offers {
         set_symbol_property(sym_node, &offer.seller, &offer.url);
         set_symbol_property(sym_node, &format!("{} #", offer.seller), &offer.sku);
@@ -357,6 +390,7 @@ mod tests {
         MouserPart {
             manufacturer: "Texas Instruments".to_string(),
             mpn: "LM358P".to_string(),
+            description: "Op Amps Dual Op Amp".to_string(),
             url: format!("https://mouser.com/{seller_suffix}"),
             sku: "595-LM358P".to_string(),
             price_summary: "1:$0.55".to_string(),
@@ -372,6 +406,7 @@ mod tests {
         DigikeyPart {
             manufacturer: "Texas Instruments".to_string(),
             mpn: "LM358P".to_string(),
+            description: "Standard (General Purpose) Amplifier 2 Circuit 8-PDIP".to_string(),
             url: "https://digikey.com/lm358p".to_string(),
             sku: "296-1395-5-ND".to_string(),
             price_summary: "1:$0.60".to_string(),
@@ -563,6 +598,85 @@ mod tests {
         assert!(!is_lifecycle_concern("New Product"));
         assert!(!is_lifecycle_concern("Unknown"));
         assert!(!is_lifecycle_concern(""));
+    }
+
+    // ── description ──────────────────────────────────────────────────
+
+    #[test]
+    fn richer_description_picks_more_non_whitespace_characters() {
+        assert_eq!(
+            richer_description("short", "a much longer description"),
+            "a much longer description"
+        );
+        assert_eq!(
+            richer_description("a much longer description", "short"),
+            "a much longer description"
+        );
+    }
+
+    #[test]
+    fn richer_description_is_not_fooled_by_padding_whitespace() {
+        // "short" padded with spaces is still shorter in actual content
+        // than "denser", even though its raw `.len()` is now bigger.
+        assert_eq!(richer_description("short          ", "denser"), "denser");
+    }
+
+    #[test]
+    fn richer_description_keeps_a_on_ties_including_both_empty() {
+        assert_eq!(richer_description("same", "same"), "same");
+        assert_eq!(richer_description("", ""), "");
+    }
+
+    #[test]
+    fn combine_results_picks_the_richer_vendor_description() {
+        // `digikey_part()`'s description is longer than `mouser_part()`'s
+        // — see the fixtures above.
+        let info = combine_results(
+            "LM358P",
+            Some(Ok(mouser_part("a"))),
+            Some(Ok(digikey_part())),
+        )
+        .unwrap();
+        assert_eq!(
+            info.description,
+            "Standard (General Purpose) Amplifier 2 Circuit 8-PDIP"
+        );
+    }
+
+    #[test]
+    fn combine_results_description_is_empty_when_neither_vendor_has_one() {
+        let mut mouser = mouser_part("a");
+        mouser.description = String::new();
+        let info = combine_results("LM358P", Some(Ok(mouser)), None).unwrap();
+        assert_eq!(info.description, "");
+    }
+
+    #[test]
+    fn apply_part_info_writes_a_vendor_description_property() {
+        let info = combine_results("LM358P", Some(Ok(mouser_part("a"))), None).unwrap();
+        let mut node = crate::sexp::parse(r#"(symbol "U1" (property "Reference" "U"))"#).unwrap();
+        apply_part_info(&mut node, &info);
+
+        let has_description = node.find_all("property").into_iter().any(|p| {
+            matches!(p.children.first(), Some(Child::Atom(a)) if a.text() == "Vendor Description")
+                && matches!(p.children.get(1), Some(Child::Atom(v)) if v.text() == "Op Amps Dual Op Amp")
+        });
+        assert!(has_description);
+    }
+
+    #[test]
+    fn apply_part_info_omits_vendor_description_when_empty() {
+        let mut mouser = mouser_part("a");
+        mouser.description = String::new();
+        let info = combine_results("LM358P", Some(Ok(mouser)), None).unwrap();
+        let mut node = crate::sexp::parse(r#"(symbol "U1" (property "Reference" "U"))"#).unwrap();
+        apply_part_info(&mut node, &info);
+
+        let has_description = node
+            .find_all("property")
+            .into_iter()
+            .any(|p| matches!(p.children.first(), Some(Child::Atom(a)) if a.text() == "Vendor Description"));
+        assert!(!has_description);
     }
 
     // ── price formatting ─────────────────────────────────────────────

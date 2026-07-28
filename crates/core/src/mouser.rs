@@ -26,6 +26,10 @@ pub struct MouserCredentials {
 pub struct MouserPart {
     pub manufacturer: String,
     pub mpn: String,
+    /// Mouser's own `Description` verbatim, e.g. `"Operational
+    /// Amplifiers - Op Amps Dual Op Amp"` — empty if Mouser didn't send
+    /// one (seen `null` for some parts, same as `Availability`).
+    pub description: String,
     pub url: String,
     pub sku: String,
     pub price_summary: String,
@@ -139,6 +143,11 @@ struct RawPart {
     manufacturer_part_number: String,
     #[serde(rename = "Manufacturer", default)]
     manufacturer: String,
+    /// `Option` for the same reason as `availability`/`lifecycle_status`
+    /// below — Mouser sends `null` here for some parts, not just an
+    /// absent key or empty string.
+    #[serde(rename = "Description", default)]
+    description: Option<String>,
     #[serde(rename = "ProductDetailUrl", default)]
     product_detail_url: String,
     #[serde(rename = "PriceBreaks", default)]
@@ -287,6 +296,7 @@ fn parse_search_response(text: &str, mpn: &str) -> Result<MouserPart, MouserErro
         } else {
             part.manufacturer_part_number
         },
+        description: part.description.unwrap_or_default().trim().to_string(),
         url: part.product_detail_url,
         sku: part.mouser_part_number,
         price_summary: format_price_breaks(&breaks),
@@ -316,6 +326,7 @@ mod tests {
                 "MouserPartNumber": "595-LM358P",
                 "ManufacturerPartNumber": "LM358P",
                 "Manufacturer": "Texas Instruments",
+                "Description": "Operational Amplifiers - Op Amps Dual Op Amp",
                 "ProductDetailUrl": "https://www.mouser.com/lm358p",
                 "PriceBreaks": [
                     { "Quantity": 1, "Price": "$0.5500", "Currency": "USD" },
@@ -334,6 +345,32 @@ mod tests {
         assert_eq!(part.mpn, "LM358P");
         assert_eq!(part.sku, "595-LM358P");
         assert_eq!(part.url, "https://www.mouser.com/lm358p");
+    }
+
+    // ── description ───────────────────────────────────────────────────
+
+    #[test]
+    fn parses_description() {
+        let part = parse_search_response(FIXTURE, "LM358P").unwrap();
+        assert_eq!(
+            part.description,
+            "Operational Amplifiers - Op Amps Dual Op Amp"
+        );
+    }
+
+    #[test]
+    fn null_description_is_empty_not_an_error() {
+        // Same nullable-field caution as `availability`/`lifecycle_status`
+        // — Mouser can send `"Description": null`.
+        let text = r#"{
+            "SearchResults": { "Parts": [{
+                "MouserPartNumber": "1", "ManufacturerPartNumber": "X",
+                "Manufacturer": "Acme", "ProductDetailUrl": "",
+                "Description": null
+            }]}
+        }"#;
+        let part = parse_search_response(text, "X").unwrap();
+        assert_eq!(part.description, "");
     }
 
     #[test]

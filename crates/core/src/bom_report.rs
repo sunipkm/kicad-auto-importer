@@ -593,6 +593,7 @@ mod tests {
         PartInfo {
             manufacturer: "Texas Instruments".to_string(),
             mpn: "LM358P".to_string(),
+            description: String::new(),
             offers: vec![VendorOffer {
                 seller: "Mouser".to_string(),
                 url: String::new(),
@@ -612,6 +613,7 @@ mod tests {
         PartInfo {
             manufacturer: "YAGEO".to_string(),
             mpn: "AC0402FR-072K7L".to_string(),
+            description: String::new(),
             offers: vec![VendorOffer {
                 seller: "DigiKey".to_string(),
                 url: String::new(),
@@ -631,6 +633,7 @@ mod tests {
         PartInfo {
             manufacturer: "Texas Instruments".to_string(),
             mpn: "LM117HVH".to_string(),
+            description: String::new(),
             offers: vec![VendorOffer {
                 seller: "Mouser".to_string(),
                 url: String::new(),
