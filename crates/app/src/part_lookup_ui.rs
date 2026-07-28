@@ -231,6 +231,14 @@ impl PartLookupState {
         }
         self.status.clear();
         self.results.clear();
+        // Reset now, not just once the batch actually starts below: if
+        // the KiCad-open warning gets cancelled, `look_up_selected`
+        // returns before ever reaching the old reset spot, which left a
+        // *previous* run's done/total counts behind and made the
+        // progress bar reappear for a batch that never started.
+        self.progress_done = 0;
+        self.progress_total = 0;
+        self.current_item.clear();
 
         let project_name = project_dir
             .file_name()
@@ -299,9 +307,9 @@ impl PartLookupState {
             .save_file()
             .unwrap_or_else(|| project_dir.join(&default_report_name));
 
-        self.progress_done = 0;
+        // `progress_done`/`current_item` were already reset above; only
+        // the real total is known now that `selected` is built.
         self.progress_total = selected.len();
-        self.current_item.clear();
 
         let (tx, rx) = mpsc::channel();
         self.rx = Some(rx);
