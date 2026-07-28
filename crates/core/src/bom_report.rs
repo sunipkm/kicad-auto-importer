@@ -28,7 +28,9 @@ use std::path::Path;
 
 use printpdf::path::PaintMode;
 use printpdf::{BuiltinFont, Color, Mm, PdfLayerReference, Rect, Rgb};
+use rust_xlsxwriter::{Color as XlsxColor, Format as XlsxFormat, Workbook};
 
+use crate::bom_pricing;
 use crate::parts_lookup::PartInfo;
 
 /// One row of the report: a placed symbol plus whatever the lookup
@@ -72,6 +74,8 @@ pub enum ReportError {
     Io(#[from] std::io::Error),
     #[error("pdf error: {0}")]
     Pdf(#[from] printpdf::Error),
+    #[error("xlsx error: {0}")]
+    Xlsx(#[from] rust_xlsxwriter::XlsxError),
 }
 
 const PAGE_WIDTH: f32 = 297.0;
@@ -87,8 +91,12 @@ const ROW_FONT_SIZE: f32 = 9.0;
 const HEADER_FONT_SIZE: f32 = 9.0;
 /// Columns as (label, width in mm) — widths sum to exactly
 /// `PAGE_WIDTH - 2 * MARGIN` (267mm) so the table's right edge lands on
-/// the right margin.
-const COLUMNS: &[(&str, f32)] = &[
+/// the right margin. Used by the "Populate BOM" stock report
+/// (`generate`); the priced BOM report (`generate_priced_bom`) has its
+/// own [`PRICED_COLUMNS`] — both share the same drawing machinery below
+/// via an explicit `columns` parameter rather than a single hardcoded
+/// const.
+const STOCK_COLUMNS: &[(&str, f32)] = &[
     ("Reference", 16.0),
     ("Symbol", 30.0),
     ("Manufacturer", 42.0),
@@ -98,8 +106,21 @@ const COLUMNS: &[(&str, f32)] = &[
     ("Status", 48.0),
 ];
 
-fn column_x(index: usize) -> f32 {
-    MARGIN + COLUMNS[..index].iter().map(|(_, w)| w).sum::<f32>()
+/// Columns for the priced/grouped BOM report — see [`STOCK_COLUMNS`].
+/// Widths also sum to exactly `PAGE_WIDTH - 2 * MARGIN` (267mm).
+const PRICED_COLUMNS: &[(&str, f32)] = &[
+    ("Part", 50.0),
+    ("References", 45.0),
+    ("Need", 16.0),
+    ("Buy", 16.0),
+    ("Vendor", 26.0),
+    ("Unit $", 22.0),
+    ("Ext $", 24.0),
+    ("Flags", 68.0),
+];
+
+fn column_x(columns: &[(&str, f32)], index: usize) -> f32 {
+    MARGIN + columns[..index].iter().map(|(_, w)| w).sum::<f32>()
 }
 
 fn text_color(color: (f32, f32, f32)) -> Color {
@@ -317,13 +338,18 @@ fn draw_text(
 
 /// A column's usable width for [`draw_text`]'s clip, i.e. its full
 /// width minus the `1.5mm` left inset every cell is drawn at.
-fn column_width(index: usize) -> f32 {
-    COLUMNS[index].1 - 1.5
+fn column_width(columns: &[(&str, f32)], index: usize) -> f32 {
+    columns[index].1 - 1.5
 }
 
 /// Draws the table's column header row at `y`, returning the y for the
 /// first data row below it.
-fn draw_column_header(layer: &PdfLayerReference, fonts: &Fonts, y: f32) -> f32 {
+fn draw_column_header(
+    layer: &PdfLayerReference,
+    fonts: &Fonts,
+    columns: &[(&str, f32)],
+    y: f32,
+) -> f32 {
     fill_rect(
         layer,
         MARGIN,
@@ -333,14 +359,14 @@ fn draw_column_header(layer: &PdfLayerReference, fonts: &Fonts, y: f32) -> f32 {
         HEADER_BG,
     );
     let style = TextStyle::new(HEADER_FONT_SIZE, true, WHITE);
-    for (i, (label, _)) in COLUMNS.iter().enumerate() {
+    for (i, (label, _)) in columns.iter().enumerate() {
         draw_text(
             layer,
             fonts,
             label,
-            column_x(i) + 1.5,
+            column_x(columns, i) + 1.5,
             y - ROW_HEIGHT + 4.5,
-            column_width(i),
+            column_width(columns, i),
             style,
         );
     }
@@ -368,11 +394,16 @@ struct WrappedCell {
 fn wrap_row(row: &ReportRow) -> (Vec<WrappedCell>, f32) {
     let plain = TextStyle::new(ROW_FONT_SIZE, false, BLACK);
     let cell = |text: &str, col: usize, style: TextStyle| WrappedCell {
-        lines: wrap_text(text, column_width(col), style.size, style.bold),
+        lines: wrap_text(
+            text,
+            column_width(STOCK_COLUMNS, col),
+            style.size,
+            style.bold,
+        ),
         style,
     };
 
-    let mut cols = Vec::with_capacity(COLUMNS.len());
+    let mut cols = Vec::with_capacity(STOCK_COLUMNS.len());
     cols.push(cell(&row.reference, 0, plain));
     cols.push(cell(&row.symbol, 1, plain));
 
@@ -429,12 +460,22 @@ fn wrap_row(row: &ReportRow) -> (Vec<WrappedCell>, f32) {
     (cols, row_height(n_lines))
 }
 
+/// Bundles a table-drawing call's per-page/per-table constants (which
+/// PDF layer, which fonts, which column layout) — same rationale as
+/// `TextStyle` above: keeps `draw_wrapped_row` under clippy's
+/// too-many-arguments threshold instead of taking three more loose
+/// parameters on top of the ones that actually vary per row.
+struct TableContext<'a> {
+    layer: &'a PdfLayerReference,
+    fonts: &'a Fonts,
+    columns: &'a [(&'a str, f32)],
+}
+
 /// Draws one already-wrapped data row at `y` (the row's *top*, height
 /// `height` as returned by `wrap_row`), returning the y for the next
 /// row below it.
 fn draw_wrapped_row(
-    layer: &PdfLayerReference,
-    fonts: &Fonts,
+    ctx: &TableContext,
     y: f32,
     height: f32,
     index: usize,
@@ -449,7 +490,7 @@ fn draw_wrapped_row(
         WHITE
     };
     fill_rect(
-        layer,
+        ctx.layer,
         MARGIN,
         y - height + 2.0,
         PAGE_WIDTH - 2.0 * MARGIN,
@@ -458,11 +499,11 @@ fn draw_wrapped_row(
     );
 
     for (i, col) in cols.iter().enumerate() {
-        let x = column_x(i) + 1.5;
-        let width = column_width(i);
+        let x = column_x(ctx.columns, i) + 1.5;
+        let width = column_width(ctx.columns, i);
         for (line_idx, line) in col.lines.iter().enumerate() {
             let line_y = y - ROW_HEIGHT + 4.5 - line_idx as f32 * LINE_STEP;
-            draw_text(layer, fonts, line, x, line_y, width, col.style);
+            draw_text(ctx.layer, ctx.fonts, line, x, line_y, width, col.style);
         }
     }
 }
@@ -563,16 +604,21 @@ pub fn generate(
         ),
     );
 
-    let mut y = draw_column_header(&layer, &fonts, PAGE_HEIGHT - MARGIN - 22.0);
+    let mut y = draw_column_header(&layer, &fonts, STOCK_COLUMNS, PAGE_HEIGHT - MARGIN - 22.0);
 
     for (i, row) in rows.iter().enumerate() {
         let (cols, height) = wrap_row(row);
         if y - height < MARGIN {
             let (page_idx, layer_idx) = doc.add_page(Mm(PAGE_WIDTH), Mm(PAGE_HEIGHT), "Layer 1");
             layer = doc.get_page(page_idx).get_layer(layer_idx);
-            y = draw_column_header(&layer, &fonts, PAGE_HEIGHT - MARGIN);
+            y = draw_column_header(&layer, &fonts, STOCK_COLUMNS, PAGE_HEIGHT - MARGIN);
         }
-        draw_wrapped_row(&layer, &fonts, y, height, i, row.needs_attention(), &cols);
+        let ctx = TableContext {
+            layer: &layer,
+            fonts: &fonts,
+            columns: STOCK_COLUMNS,
+        };
+        draw_wrapped_row(&ctx, y, height, i, row.needs_attention(), &cols);
         y -= height;
     }
 
@@ -580,6 +626,312 @@ pub fn generate(
         std::fs::create_dir_all(parent)?;
     }
     doc.save(&mut BufWriter::new(File::create(out_path)?))?;
+    Ok(())
+}
+
+fn priced_row_in_stock(row: &bom_pricing::PricedRow) -> bool {
+    row.outcome.as_ref().map(|c| c.in_stock).unwrap_or(false)
+}
+
+fn priced_row_lifecycle_concern(row: &bom_pricing::PricedRow) -> bool {
+    row.outcome
+        .as_ref()
+        .map(|c| c.lifecycle_concern)
+        .unwrap_or(true)
+}
+
+/// True when the winning vendor's own on-hand quantity is less than the
+/// quantity this row actually buys — distinct from `!priced_row_in_stock`
+/// (which only catches *zero* stock): a vendor with 3 on hand still
+/// counts as "in stock" but can't fulfill a purchase of 10.
+fn priced_row_stock_shortfall(row: &bom_pricing::PricedRow) -> bool {
+    row.outcome
+        .as_ref()
+        .map(|c| c.stock_quantity < u64::from(c.purchase_qty))
+        .unwrap_or(false)
+}
+
+fn priced_row_needs_attention(row: &bom_pricing::PricedRow) -> bool {
+    !priced_row_in_stock(row)
+        || priced_row_lifecycle_concern(row)
+        || priced_row_stock_shortfall(row)
+}
+
+/// The `Part` column's display text: the vendor-confirmed
+/// manufacturer/MPN when a lookup succeeded (more precise/normalized
+/// than what was merely searched for), falling back to the group's own
+/// `display_name` (the MPN that was searched for, or `"<symbol>
+/// <value>"`) when there's no chosen offer to draw from.
+fn priced_part_label(row: &bom_pricing::PricedRow) -> String {
+    match &row.outcome {
+        Ok(chosen) if !chosen.mpn.is_empty() && !chosen.manufacturer.is_empty() => {
+            format!("{} \u{2014} {}", chosen.manufacturer, chosen.mpn)
+        }
+        Ok(chosen) if !chosen.mpn.is_empty() => chosen.mpn.clone(),
+        _ => row.group.display_name.clone(),
+    }
+}
+
+fn wrap_priced_row(row: &bom_pricing::PricedRow) -> (Vec<WrappedCell>, f32) {
+    let plain = TextStyle::new(ROW_FONT_SIZE, false, BLACK);
+    let cell = |text: &str, col: usize, style: TextStyle| WrappedCell {
+        lines: wrap_text(
+            text,
+            column_width(PRICED_COLUMNS, col),
+            style.size,
+            style.bold,
+        ),
+        style,
+    };
+
+    let mut cols = Vec::with_capacity(PRICED_COLUMNS.len());
+    let references = row.group.references.join(", ");
+    let part = priced_part_label(row);
+
+    cols.push(cell(&part, 0, plain));
+    cols.push(cell(&references, 1, plain));
+    cols.push(cell(&row.needed_qty.to_string(), 2, plain));
+
+    match &row.outcome {
+        Ok(chosen) => {
+            cols.push(cell(&chosen.purchase_qty.to_string(), 3, plain));
+            cols.push(cell(&chosen.seller, 4, plain));
+            cols.push(cell(&format!("${:.2}", chosen.unit_price), 5, plain));
+            cols.push(cell(&format!("${:.2}", chosen.total_price), 6, plain));
+
+            let mut flags: Vec<&str> = Vec::new();
+            if !chosen.in_stock {
+                flags.push("NOT IN STOCK");
+            } else if chosen.stock_quantity < u64::from(chosen.purchase_qty) {
+                flags.push("NOT ENOUGH STOCK");
+            }
+            if chosen.lifecycle_concern {
+                flags.push("OBSOLETE/EOL");
+            }
+            let (flag, color) = if flags.is_empty() {
+                ("OK".to_string(), GREEN)
+            } else {
+                (flags.join(" / "), RED)
+            };
+            cols.push(cell(&flag, 7, TextStyle::new(ROW_FONT_SIZE, true, color)));
+        }
+        Err(msg) => {
+            cols.push(cell("-", 3, plain));
+            cols.push(cell("-", 4, plain));
+            cols.push(cell("-", 5, plain));
+            cols.push(cell("-", 6, plain));
+            cols.push(cell(
+                &format!("LOOKUP FAILED: {msg}"),
+                7,
+                TextStyle::new(ROW_FONT_SIZE, true, RED),
+            ));
+        }
+    }
+
+    let n_lines = cols.iter().map(|c| c.lines.len()).max().unwrap_or(1).max(1);
+    (cols, row_height(n_lines))
+}
+
+/// Renders a "Generate BOM" batch's grouped, priced results as a
+/// paginated PDF table — the priced-BOM sibling of [`generate`], same
+/// page/pagination/word-wrap machinery, different column layout
+/// ([`PRICED_COLUMNS`]) and data source
+/// (`bom_pricing::PricedRow`/`crate::bom_pricing`).
+pub fn generate_priced_bom(
+    rows: &[bom_pricing::PricedRow],
+    project_name: &str,
+    board_qty: u32,
+    generated_at: &str,
+    out_path: &Path,
+) -> Result<(), ReportError> {
+    let (doc, page1, layer1) =
+        printpdf::PdfDocument::new("Priced BOM", Mm(PAGE_WIDTH), Mm(PAGE_HEIGHT), "Layer 1");
+    let fonts = Fonts {
+        regular: doc.add_builtin_font(BuiltinFont::Helvetica)?,
+        bold: doc.add_builtin_font(BuiltinFont::HelveticaBold)?,
+    };
+
+    let mut layer = doc.get_page(page1).get_layer(layer1);
+
+    let grand_total: f64 = rows
+        .iter()
+        .filter_map(|r| r.outcome.as_ref().ok())
+        .map(|c| c.total_price)
+        .sum();
+    let failed = rows.iter().filter(|r| r.outcome.is_err()).count();
+
+    let full_width = PAGE_WIDTH - 2.0 * MARGIN;
+    draw_text(
+        &layer,
+        &fonts,
+        "Priced BOM",
+        MARGIN,
+        PAGE_HEIGHT - MARGIN,
+        full_width,
+        TextStyle::new(18.0, true, BLACK),
+    );
+    draw_text(
+        &layer,
+        &fonts,
+        &format!(
+            "{project_name}  \u{2014}  {board_qty} board(s)  \u{2014}  generated {generated_at}"
+        ),
+        MARGIN,
+        PAGE_HEIGHT - MARGIN - 7.0,
+        full_width,
+        TextStyle::new(10.0, false, BLACK),
+    );
+    let summary = if failed > 0 {
+        format!(
+            "Estimated total: ${grand_total:.2}  \u{2014}  {failed} of {} part(s) could not be priced",
+            rows.len()
+        )
+    } else {
+        format!("Estimated total: ${grand_total:.2}")
+    };
+    draw_text(
+        &layer,
+        &fonts,
+        &summary,
+        MARGIN,
+        PAGE_HEIGHT - MARGIN - 14.0,
+        full_width,
+        TextStyle::new(11.0, true, if failed > 0 { RED } else { GREEN }),
+    );
+
+    let mut y = draw_column_header(&layer, &fonts, PRICED_COLUMNS, PAGE_HEIGHT - MARGIN - 22.0);
+
+    for (i, row) in rows.iter().enumerate() {
+        let (cols, height) = wrap_priced_row(row);
+        if y - height < MARGIN {
+            let (page_idx, layer_idx) = doc.add_page(Mm(PAGE_WIDTH), Mm(PAGE_HEIGHT), "Layer 1");
+            layer = doc.get_page(page_idx).get_layer(layer_idx);
+            y = draw_column_header(&layer, &fonts, PRICED_COLUMNS, PAGE_HEIGHT - MARGIN);
+        }
+        let ctx = TableContext {
+            layer: &layer,
+            fonts: &fonts,
+            columns: PRICED_COLUMNS,
+        };
+        draw_wrapped_row(&ctx, y, height, i, priced_row_needs_attention(row), &cols);
+        y -= height;
+    }
+
+    if let Some(parent) = out_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    doc.save(&mut BufWriter::new(File::create(out_path)?))?;
+    Ok(())
+}
+
+/// Writes the same rows [`generate_priced_bom`] renders as a PDF out as
+/// a genuine `.xlsx` workbook instead of a CSV — for pasting into a
+/// distributor's bulk-order tool or reviewing/filtering in a
+/// spreadsheet, where a PDF table is inconvenient. An earlier version of
+/// this used CSV, but CSV's column delimiter is also valid cell content:
+/// a multi-reference group like `"R1, R5, R20"` can get re-split into
+/// extra columns the moment a spreadsheet app's locale treats a
+/// different character as the delimiter, corrupting every column after
+/// it. A real spreadsheet format has no such ambiguity — each value is
+/// its own cell regardless of what characters it contains — and, as a
+/// bonus, can carry the same red-tinted "needs attention" row highlight
+/// the PDF report already uses, which plain CSV has no way to express
+/// at all.
+///
+/// One row per [`bom_pricing::PricedRow`] plus a trailing `Total` row; a
+/// failed lookup still gets a row (with blank price cells and a
+/// `LOOKUP FAILED` note) rather than silently vanishing from the BOM.
+pub fn generate_priced_bom_xlsx(
+    rows: &[bom_pricing::PricedRow],
+    board_qty: u32,
+    out_path: &Path,
+) -> Result<(), ReportError> {
+    let mut workbook = Workbook::new();
+    let sheet = workbook.add_worksheet();
+    sheet.set_name("Priced BOM")?;
+
+    let header_format = XlsxFormat::new()
+        .set_bold()
+        .set_font_color(XlsxColor::White)
+        .set_background_color(XlsxColor::RGB(0x33_38_3F));
+    let normal_format = XlsxFormat::new();
+    let flagged_format = XlsxFormat::new().set_background_color(XlsxColor::RGB(0xFA_D9_D9));
+    let money_format = XlsxFormat::new().set_num_format("$0.00");
+    let flagged_money_format = XlsxFormat::new()
+        .set_num_format("$0.00")
+        .set_background_color(XlsxColor::RGB(0xFA_D9_D9));
+    let bold_format = XlsxFormat::new().set_bold();
+    let bold_money_format = XlsxFormat::new().set_bold().set_num_format("$0.00");
+
+    const HEADERS: [&str; 11] = [
+        "Part",
+        "References",
+        "Need",
+        "Buy",
+        "Vendor",
+        "Unit Price",
+        "Ext Price",
+        "In Stock",
+        "Stock Qty",
+        "Stock Shortfall",
+        "Lifecycle Concern",
+    ];
+    for (col, header) in HEADERS.iter().enumerate() {
+        sheet.write_with_format(0, col as u16, *header, &header_format)?;
+    }
+
+    let mut grand_total = 0.0f64;
+    let mut row_idx: u32 = 1;
+    for row in rows {
+        let text_fmt = if priced_row_needs_attention(row) {
+            &flagged_format
+        } else {
+            &normal_format
+        };
+        let money_fmt = if priced_row_needs_attention(row) {
+            &flagged_money_format
+        } else {
+            &money_format
+        };
+
+        let part = priced_part_label(row);
+        let references = row.group.references.join(", ");
+        sheet.write_with_format(row_idx, 0, &part, text_fmt)?;
+        sheet.write_with_format(row_idx, 1, &references, text_fmt)?;
+        sheet.write_with_format(row_idx, 2, row.needed_qty, text_fmt)?;
+
+        match &row.outcome {
+            Ok(chosen) => {
+                grand_total += chosen.total_price;
+                let shortfall = chosen.stock_quantity < u64::from(chosen.purchase_qty);
+                sheet.write_with_format(row_idx, 3, chosen.purchase_qty, text_fmt)?;
+                sheet.write_with_format(row_idx, 4, &chosen.seller, text_fmt)?;
+                sheet.write_with_format(row_idx, 5, chosen.unit_price, money_fmt)?;
+                sheet.write_with_format(row_idx, 6, chosen.total_price, money_fmt)?;
+                sheet.write_with_format(row_idx, 7, chosen.in_stock, text_fmt)?;
+                sheet.write_with_format(row_idx, 8, chosen.stock_quantity, text_fmt)?;
+                sheet.write_with_format(row_idx, 9, shortfall, text_fmt)?;
+                sheet.write_with_format(row_idx, 10, chosen.lifecycle_concern, text_fmt)?;
+            }
+            Err(msg) => {
+                sheet.write_with_format(row_idx, 10, format!("LOOKUP FAILED: {msg}"), text_fmt)?;
+            }
+        }
+        row_idx += 1;
+    }
+
+    sheet.write_with_format(row_idx, 0, "Total", &bold_format)?;
+    sheet.write_with_format(row_idx, 6, grand_total, &bold_money_format)?;
+    row_idx += 1;
+    sheet.write_with_format(row_idx, 0, "Board quantity", &bold_format)?;
+    sheet.write_with_format(row_idx, 1, board_qty, &normal_format)?;
+
+    sheet.autofit();
+
+    if let Some(parent) = out_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    workbook.save(out_path)?;
     Ok(())
 }
 
@@ -601,9 +953,11 @@ mod tests {
                 price_summary: String::new(),
                 stock_status: StockStatus::InStock,
                 stock_summary: "1,000 In Stock".to_string(),
+                stock_quantity: 1000,
                 lifecycle_summary: "Active".to_string(),
                 lifecycle_concern: false,
                 suggested_replacement: String::new(),
+                price_breaks: Vec::new(),
             }],
             warnings: Vec::new(),
         }
@@ -621,9 +975,11 @@ mod tests {
                 price_summary: String::new(),
                 stock_status: StockStatus::OutOfStock,
                 stock_summary: "0 in stock".to_string(),
+                stock_quantity: 0,
                 lifecycle_summary: "Unknown".to_string(),
                 lifecycle_concern: false,
                 suggested_replacement: String::new(),
+                price_breaks: Vec::new(),
             }],
             warnings: Vec::new(),
         }
@@ -641,9 +997,11 @@ mod tests {
                 price_summary: String::new(),
                 stock_status: StockStatus::InStock,
                 stock_summary: "12 In Stock".to_string(),
+                stock_quantity: 12,
                 lifecycle_summary: "Obsolete".to_string(),
                 lifecycle_concern: true,
                 suggested_replacement: String::new(),
+                price_breaks: Vec::new(),
             }],
             warnings: Vec::new(),
         }
@@ -668,7 +1026,13 @@ mod tests {
 
     #[test]
     fn column_widths_sum_to_table_width() {
-        let total: f32 = COLUMNS.iter().map(|(_, w)| w).sum();
+        let total: f32 = STOCK_COLUMNS.iter().map(|(_, w)| w).sum();
+        assert!((total - (PAGE_WIDTH - 2.0 * MARGIN)).abs() < 0.01);
+    }
+
+    #[test]
+    fn priced_column_widths_sum_to_table_width() {
+        let total: f32 = PRICED_COLUMNS.iter().map(|(_, w)| w).sum();
         assert!((total - (PAGE_WIDTH - 2.0 * MARGIN)).abs() < 0.01);
     }
 
@@ -833,6 +1197,135 @@ mod tests {
         let dir = tempdir().unwrap();
         let out_path = dir.path().join("nested").join("dir").join("report.pdf");
         generate(&[], "demo-project", "2026-07-27 12:00", &out_path).unwrap();
+        assert!(out_path.is_file());
+    }
+
+    // ── priced BOM (PDF + CSV) ────────────────────────────────────────
+
+    fn priced_group(display_name: &str, references: &[&str]) -> bom_pricing::PartGroup {
+        bom_pricing::PartGroup {
+            group_key: display_name.to_string(),
+            references: references.iter().map(|r| r.to_string()).collect(),
+            search_mpn: display_name.to_string(),
+            display_name: display_name.to_string(),
+            is_passive: false,
+            per_board_qty: references.len() as u32,
+            instances: Vec::new(),
+        }
+    }
+
+    fn priced_ok_row(display_name: &str, references: &[&str]) -> bom_pricing::PricedRow {
+        bom_pricing::PricedRow {
+            group: priced_group(display_name, references),
+            needed_qty: references.len() as u32,
+            outcome: Ok(bom_pricing::ChosenOffer {
+                seller: "Mouser".to_string(),
+                manufacturer: "Texas Instruments".to_string(),
+                mpn: display_name.to_string(),
+                sku: "595-XYZ".to_string(),
+                purchase_qty: references.len() as u32,
+                unit_price: 0.10,
+                total_price: 0.10 * references.len() as f64,
+                in_stock: true,
+                stock_quantity: 10_000,
+                lifecycle_concern: false,
+            }),
+        }
+    }
+
+    fn priced_failed_row(display_name: &str, references: &[&str]) -> bom_pricing::PricedRow {
+        bom_pricing::PricedRow {
+            group: priced_group(display_name, references),
+            needed_qty: references.len() as u32,
+            outcome: Err("no match found".to_string()),
+        }
+    }
+
+    #[test]
+    fn generates_a_nonempty_priced_pdf() {
+        let dir = tempdir().unwrap();
+        let out_path = dir.path().join("priced.pdf");
+        let rows = vec![
+            priced_ok_row("LM358P", &["U1", "U2"]),
+            priced_failed_row("UNKNOWN123", &["U9"]),
+        ];
+        generate_priced_bom(&rows, "demo-project", 5, "2026-07-27 12:00", &out_path).unwrap();
+
+        let bytes = std::fs::read(&out_path).unwrap();
+        assert!(bytes.starts_with(b"%PDF"));
+        assert!(bytes.len() > 500);
+    }
+
+    #[test]
+    fn priced_pdf_creates_missing_parent_directories() {
+        let dir = tempdir().unwrap();
+        let out_path = dir.path().join("nested").join("dir").join("priced.pdf");
+        generate_priced_bom(&[], "demo-project", 1, "2026-07-27 12:00", &out_path).unwrap();
+        assert!(out_path.is_file());
+    }
+
+    fn open_priced_sheet(path: &Path) -> calamine::Range<calamine::Data> {
+        use calamine::Reader;
+        let mut workbook: calamine::Xlsx<_> = calamine::open_workbook(path).unwrap();
+        workbook.worksheet_range("Priced BOM").unwrap()
+    }
+
+    #[test]
+    fn generates_an_xlsx_with_a_correct_grand_total() {
+        use calamine::DataType;
+
+        let dir = tempdir().unwrap();
+        let out_path = dir.path().join("priced.xlsx");
+        let rows = vec![
+            priced_ok_row("LM358P", &["U1", "U2"]), // 2 * $0.10 = $0.20
+            priced_ok_row("RC0603FR", &["R1"]),     // 1 * $0.10 = $0.10
+            priced_failed_row("UNKNOWN123", &["U9"]),
+        ];
+        generate_priced_bom_xlsx(&rows, 5, &out_path).unwrap();
+
+        let range = open_priced_sheet(&out_path);
+        assert_eq!(range.get_value((0, 0)).unwrap().get_string(), Some("Part"));
+        assert_eq!(
+            range.get_value((0, 9)).unwrap().get_string(),
+            Some("Stock Shortfall")
+        );
+        // Row 4 (0-indexed) is the Total row: header + 3 data rows.
+        assert_eq!(range.get_value((4, 0)).unwrap().get_string(), Some("Total"));
+        assert!((range.get_value((4, 6)).unwrap().get_float().unwrap() - 0.30).abs() < 1e-9);
+        assert_eq!(
+            range.get_value((5, 0)).unwrap().get_string(),
+            Some("Board quantity")
+        );
+        assert_eq!(range.get_value((5, 1)).unwrap().get_float(), Some(5.0));
+        assert_eq!(
+            range.get_value((3, 10)).unwrap().get_string(),
+            Some("LOOKUP FAILED: no match found")
+        );
+    }
+
+    #[test]
+    fn xlsx_records_a_stock_shortfall() {
+        use calamine::DataType;
+
+        let dir = tempdir().unwrap();
+        let out_path = dir.path().join("priced.xlsx");
+        let mut row = priced_ok_row("LM358P", &["U1"]);
+        if let Ok(chosen) = &mut row.outcome {
+            chosen.purchase_qty = 10;
+            chosen.stock_quantity = 3;
+        }
+        generate_priced_bom_xlsx(&[row], 1, &out_path).unwrap();
+
+        let range = open_priced_sheet(&out_path);
+        assert_eq!(range.get_value((1, 8)).unwrap().get_float(), Some(3.0));
+        assert_eq!(range.get_value((1, 9)).unwrap().get_bool(), Some(true));
+    }
+
+    #[test]
+    fn xlsx_creates_missing_parent_directories() {
+        let dir = tempdir().unwrap();
+        let out_path = dir.path().join("nested").join("dir").join("priced.xlsx");
+        generate_priced_bom_xlsx(&[], 1, &out_path).unwrap();
         assert!(out_path.is_file());
     }
 }

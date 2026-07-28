@@ -37,6 +37,11 @@ pub struct MouserPart {
     /// Mouser's own `Availability` text verbatim, e.g. `"1,934 In
     /// Stock"` — see [`parse_availability`].
     pub stock_summary: String,
+    /// The leading quantity parsed out of `Availability` (0 if none was
+    /// present or the text was non-numeric) — used by
+    /// `bom_pricing::choose_cheapest_offer` to tell "in stock" apart
+    /// from "in stock, but not enough of it for what's needed."
+    pub stock_quantity: u64,
     /// Mouser's own `LifecycleStatus` text, e.g. `"Obsolete"` —
     /// `"Unknown"` if Mouser didn't set it (the common case: seen
     /// `null` even for parts confirmed in stock).
@@ -44,6 +49,9 @@ pub struct MouserPart {
     pub lifecycle_concern: bool,
     /// Mouser's `SuggestedReplacement`, if given; empty otherwise.
     pub suggested_replacement: String,
+    /// Raw `(quantity, unit price)` break pairs, unsorted/uncapped —
+    /// see `parts_lookup::VendorOffer::price_breaks`.
+    pub price_breaks: Vec<(f64, f64)>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -209,10 +217,14 @@ impl PriceValue {
 /// leading zero) means it isn't orderable right now. The raw text is
 /// kept verbatim as the summary since it's more legible to a human than
 /// a number reduced back down from it.
-fn parse_availability(raw: Option<&str>) -> (StockStatus, String) {
+fn parse_availability(raw: Option<&str>) -> (StockStatus, String, u64) {
     let trimmed = raw.unwrap_or("").trim();
     if trimmed.is_empty() {
-        return (StockStatus::OutOfStock, "Availability unknown".to_string());
+        return (
+            StockStatus::OutOfStock,
+            "Availability unknown".to_string(),
+            0,
+        );
     }
     let leading_digits: String = trimmed
         .chars()
@@ -225,7 +237,7 @@ fn parse_availability(raw: Option<&str>) -> (StockStatus, String) {
     } else {
         StockStatus::OutOfStock
     };
-    (status, trimmed.to_string())
+    (status, trimmed.to_string(), quantity)
 }
 
 fn search_part(api_key: &str, mpn: &str) -> Result<MouserPart, MouserError> {
@@ -279,7 +291,8 @@ fn parse_search_response(text: &str, mpn: &str) -> Result<MouserPart, MouserErro
         .iter()
         .map(|b| (b.quantity, b.price.as_f64()))
         .collect();
-    let (stock_status, stock_summary) = parse_availability(part.availability.as_deref());
+    let (stock_status, stock_summary, stock_quantity) =
+        parse_availability(part.availability.as_deref());
     let lifecycle_summary = part
         .lifecycle_status
         .as_deref()
@@ -302,6 +315,7 @@ fn parse_search_response(text: &str, mpn: &str) -> Result<MouserPart, MouserErro
         price_summary: format_price_breaks(&breaks),
         stock_status,
         stock_summary,
+        stock_quantity,
         lifecycle_summary,
         lifecycle_concern,
         suggested_replacement: part
@@ -309,6 +323,7 @@ fn parse_search_response(text: &str, mpn: &str) -> Result<MouserPart, MouserErro
             .unwrap_or_default()
             .trim()
             .to_string(),
+        price_breaks: breaks,
     })
 }
 
@@ -380,6 +395,14 @@ mod tests {
     }
 
     #[test]
+    fn raw_price_breaks_survive_unsorted_and_uncapped() {
+        let part = parse_search_response(FIXTURE, "LM358P").unwrap();
+        let mut breaks = part.price_breaks.clone();
+        breaks.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        assert_eq!(breaks, vec![(1.0, 0.55), (10.0, 0.41), (100.0, 0.32)]);
+    }
+
+    #[test]
     fn numeric_price_is_also_accepted() {
         let text = r#"{
             "SearchResults": { "Parts": [{
@@ -419,13 +442,14 @@ mod tests {
         let part = parse_search_response(FIXTURE, "LM358P").unwrap();
         assert_eq!(part.stock_status, StockStatus::InStock);
         assert_eq!(part.stock_summary, "1,934 In Stock");
+        assert_eq!(part.stock_quantity, 1934);
     }
 
     #[test]
     fn zero_in_stock_text_is_out_of_stock() {
         assert_eq!(
             parse_availability(Some("0 In Stock")),
-            (StockStatus::OutOfStock, "0 In Stock".to_string())
+            (StockStatus::OutOfStock, "0 In Stock".to_string(), 0)
         );
     }
 
@@ -433,7 +457,7 @@ mod tests {
     fn non_numeric_availability_is_out_of_stock() {
         assert_eq!(
             parse_availability(Some("Non-Stocked")),
-            (StockStatus::OutOfStock, "Non-Stocked".to_string())
+            (StockStatus::OutOfStock, "Non-Stocked".to_string(), 0)
         );
     }
 
@@ -441,7 +465,11 @@ mod tests {
     fn empty_availability_is_out_of_stock_and_unknown() {
         assert_eq!(
             parse_availability(Some("")),
-            (StockStatus::OutOfStock, "Availability unknown".to_string())
+            (
+                StockStatus::OutOfStock,
+                "Availability unknown".to_string(),
+                0
+            )
         );
     }
 
@@ -451,16 +479,19 @@ mod tests {
         // or a missing key, for some parts — must not error parsing.
         assert_eq!(
             parse_availability(None),
-            (StockStatus::OutOfStock, "Availability unknown".to_string())
+            (
+                StockStatus::OutOfStock,
+                "Availability unknown".to_string(),
+                0
+            )
         );
     }
 
     #[test]
     fn comma_thousands_separator_is_parsed() {
-        assert_eq!(
-            parse_availability(Some("12,345 In Stock")).0,
-            StockStatus::InStock
-        );
+        let (status, _, quantity) = parse_availability(Some("12,345 In Stock"));
+        assert_eq!(status, StockStatus::InStock);
+        assert_eq!(quantity, 12345);
     }
 
     // ── lifecycle status ─────────────────────────────────────────────

@@ -51,11 +51,18 @@ pub struct DigikeyPart {
     /// `QuantityAvailable` integer (unlike Mouser's free-text
     /// `Availability`, this one is always a plain count).
     pub stock_summary: String,
+    /// DigiKey's own `QuantityAvailable` verbatim — see
+    /// `MouserPart::stock_quantity`'s docs for why this is kept as a
+    /// number rather than just the boolean `stock_status`.
+    pub stock_quantity: u64,
     /// DigiKey's own `ProductStatus.Status` text, e.g. `"Obsolete"`,
     /// `"Not Recommended for New Designs"` — `"Unknown"` if DigiKey
     /// didn't set one.
     pub lifecycle_summary: String,
     pub lifecycle_concern: bool,
+    /// Raw `(quantity, unit price)` break pairs, unsorted/uncapped —
+    /// see `parts_lookup::VendorOffer::price_breaks`.
+    pub price_breaks: Vec<(f64, f64)>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -347,8 +354,10 @@ fn parse_search_response(text: &str, mpn: &str) -> Result<DigikeyPart, DigikeyEr
         price_summary: format_price_breaks(&breaks),
         stock_status,
         stock_summary: format!("{} in stock", product.quantity_available),
+        stock_quantity: product.quantity_available,
         lifecycle_summary,
         lifecycle_concern,
+        price_breaks: breaks,
     })
 }
 
@@ -397,6 +406,14 @@ mod tests {
     }
 
     #[test]
+    fn raw_price_breaks_survive_unsorted_and_uncapped() {
+        let part = parse_search_response(FIXTURE, "LM358P").unwrap();
+        let mut breaks = part.price_breaks.clone();
+        breaks.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        assert_eq!(breaks, vec![(1.0, 0.60), (10.0, 0.45), (100.0, 0.35)]);
+    }
+
+    #[test]
     fn zero_products_is_not_found() {
         let empty = r#"{"Products": [], "ProductsCount": 0}"#;
         let err = parse_search_response(empty, "NOSUCHPART").unwrap_err();
@@ -408,6 +425,7 @@ mod tests {
         let part = parse_search_response(FIXTURE, "LM358P").unwrap();
         assert_eq!(part.stock_status, StockStatus::InStock);
         assert_eq!(part.stock_summary, "2500 in stock");
+        assert_eq!(part.stock_quantity, 2500);
     }
 
     #[test]

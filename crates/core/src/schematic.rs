@@ -26,6 +26,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::parts_lookup;
 use crate::sexp::{self, Child, SexpNode};
 
 /// One symbol placed on some sheet, deduplicated by reference — a
@@ -38,6 +39,23 @@ pub struct PlacedSymbol {
     pub lib_id: String,
     pub description: String,
     pub datasheet: String,
+    /// This instance's own `Value` property (e.g. `"10k"`, `"100nF"`) —
+    /// used by `bom_pricing::group_placed_symbols` to tell apart
+    /// differently-valued placements of one generic symbol (`Device:R`
+    /// etc.) when no MPN has been set.
+    pub value: String,
+    /// This instance's own `Footprint` property, e.g.
+    /// `"Resistor_SMD:R_0603_1608Metric"` — used both for the same
+    /// grouping fallback as `value` and to detect passives (`R_`/`C_`/
+    /// `L_` footprint name prefix) for `bom_pricing`'s extra-margin rule.
+    pub footprint: String,
+    /// `parts_lookup::resolve_mpn` applied to this instance right now —
+    /// an explicit MPN-like property if one is already set (by hand, or
+    /// by a prior "Populate BOM" run), otherwise `symbol_name()` itself.
+    /// Computed once here since the instance's own sexp node is already
+    /// in hand during the same schematic walk that reads `value`/
+    /// `footprint`, rather than re-opening/re-parsing it later.
+    pub resolved_mpn: String,
     /// The `.kicad_sch` file this instance actually lives in (root or a
     /// sub-sheet) — write-back reopens exactly this file.
     pub sch_path: PathBuf,
@@ -185,11 +203,18 @@ fn collect_from_file(
         else {
             continue;
         };
+        let symbol_name = lib_id
+            .split_once(':')
+            .map_or(lib_id.as_str(), |(_, name)| name);
+        let resolved_mpn = parts_lookup::resolve_mpn(sym, symbol_name);
         out.push(PlacedSymbol {
             reference,
             lib_id,
             description: property_value(sym, "Description"),
             datasheet: property_value(sym, "Datasheet"),
+            value: property_value(sym, "Value"),
+            footprint: property_value(sym, "Footprint"),
+            resolved_mpn,
             sch_path: path.to_path_buf(),
             uuid,
         });
@@ -465,6 +490,45 @@ mod tests {
 )"##,
         )
         .unwrap();
+    }
+
+    #[test]
+    fn reads_value_and_footprint_and_falls_back_to_symbol_name_for_mpn() {
+        let dir = tempdir().unwrap();
+        write_flat_project(dir.path());
+        let rows = load_schematic_symbols(dir.path(), |_| {});
+        assert_eq!(rows[0].value, "10k");
+        assert_eq!(rows[0].footprint, "");
+        // No MPN-like property set on this instance, so it falls back
+        // to the bare symbol name — same rule as `parts_lookup::resolve_mpn`.
+        assert_eq!(rows[0].resolved_mpn, "R");
+    }
+
+    #[test]
+    fn resolved_mpn_prefers_an_explicit_mpn_property() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("demo.kicad_pro"), "{}").unwrap();
+        fs::write(
+            dir.path().join("demo.kicad_sch"),
+            r#"(kicad_sch (version 20231120)
+	(symbol
+		(lib_id "Resistor_Precision:PTS0603")
+		(at 100 100 0)
+		(unit 1)
+		(in_bom yes)
+		(uuid "66666666-6666-6666-6666-666666666666")
+		(property "Reference" "R1" (at 0 0 0))
+		(property "Value" "10k" (at 0 0 0))
+		(property "Footprint" "Resistor_SMD:R_0603_1608Metric" (at 0 0 0))
+		(property "MPN" "RC0603FR-0710KL" (at 0 0 0))
+	)
+)"#,
+        )
+        .unwrap();
+
+        let rows = load_schematic_symbols(dir.path(), |_| {});
+        assert_eq!(rows[0].resolved_mpn, "RC0603FR-0710KL");
+        assert_eq!(rows[0].footprint, "Resistor_SMD:R_0603_1608Metric");
     }
 
     #[test]

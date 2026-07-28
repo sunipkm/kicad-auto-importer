@@ -4,6 +4,7 @@
 //! GUI toolkit or on KiCad itself; the `app` crate is the only thing
 //! that knows about windows.
 
+pub mod bom_pricing;
 pub mod bom_report;
 pub mod config;
 pub mod digikey;

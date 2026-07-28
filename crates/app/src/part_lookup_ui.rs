@@ -50,9 +50,13 @@ use kicad_auto_importer_core::symbol_importer::{get_symbol_property, set_symbol_
 
 /// Below this age, a part's `Last Checked` property is considered fresh
 /// enough to skip re-querying Mouser/DigiKey for — see `run_lookup_batch`.
-/// Force-re-check bypasses this from the UI.
-const RECHECK_THRESHOLD: chrono::Duration = chrono::Duration::hours(24);
-const LAST_CHECKED_PROPERTY: &str = "Last Checked";
+/// Force-re-check bypasses this from the UI. Shared with `bom_ui.rs`'s
+/// "Generate BOM" batch, which reads/writes the same property so the two
+/// features' caches benefit each other (a part Populate BOM checked this
+/// morning doesn't get re-queried by Generate BOM this afternoon, and
+/// vice versa).
+pub(crate) const RECHECK_THRESHOLD: chrono::Duration = chrono::Duration::hours(24);
+pub(crate) const LAST_CHECKED_PROPERTY: &str = "Last Checked";
 
 use crate::theme::{self, ACCENT, DANGER, OK};
 
@@ -127,6 +131,13 @@ pub struct PartLookupState {
     /// `run_lookup_batch`. Opt-in (defaults off) since the whole point
     /// of the gate is to avoid hammering Mouser/DigiKey on every run.
     force_recheck: bool,
+    /// Set for one frame when "Generate BOM" is clicked in this window —
+    /// `ui.rs` polls it after each `show()` call and opens the (separate)
+    /// Generate BOM viewport, then clears it. This window has no access
+    /// to `MainApp`'s `BomState` itself, so a flag is the simplest way to
+    /// ask the caller to open it, rather than reaching back up through a
+    /// callback.
+    pub open_bom_requested: bool,
 }
 
 impl PartLookupState {
@@ -551,7 +562,7 @@ fn run_lookup_batch(
 /// How long ago `node`'s `Last Checked` property says it was last
 /// looked up, or `None` if it has none (or an unparseable one — treated
 /// the same as "never checked", i.e. not stale-skipped).
-fn last_checked_age(
+pub(crate) fn last_checked_age(
     node: &SexpNode,
     now: chrono::DateTime<chrono::Utc>,
 ) -> Option<chrono::Duration> {
@@ -562,7 +573,7 @@ fn last_checked_age(
 
 /// e.g. `"45m"`, `"3h"`, `"2d"` — coarse on purpose, this is just for a
 /// log line and a Result-column note, not a precise readout.
-fn format_age(age: chrono::Duration) -> String {
+pub(crate) fn format_age(age: chrono::Duration) -> String {
     if age.num_hours() < 1 {
         format!("{}m", age.num_minutes().max(0))
     } else if age.num_hours() < 48 {
@@ -813,6 +824,16 @@ pub fn show(
                     .clicked();
                 if clicked {
                     state.look_up_selected(project_dir, credentials.clone());
+                }
+                if ui
+                    .button(format!("{}  Generate BOM\u{2026}", icon::CURRENCY_DOLLAR))
+                    .on_hover_text(
+                        "Group placed parts, price them out for a given board quantity, and \
+                         export a priced BOM (PDF + CSV) in a new window.",
+                    )
+                    .clicked()
+                {
+                    state.open_bom_requested = true;
                 }
                 if ui.button("Close").clicked() {
                     state.open = false;

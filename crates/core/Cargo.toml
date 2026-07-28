@@ -24,3 +24,7 @@ smol = "2.0.2"
 ureq = "3"
 printpdf = "0.7"
 sysinfo = "0.39"
+rust_xlsxwriter = "0.96.0"
+
+[dev-dependencies]
+calamine = "0.36.1"

@@ -20,6 +20,7 @@ use kicad_auto_importer_core::zip_importer::{
     import_folder, import_zip, validate_model_subdir, ImportSettings,
 };
 
+use crate::bom_ui::{self, BomState};
 use crate::library_import_ui::{self, LibraryImportState};
 use crate::part_lookup_ui::{self, PartLookupState};
 use crate::theme::{self, ACCENT, DANGER, OK, TITLE_BAR_BG};
@@ -91,6 +92,7 @@ pub struct MainApp {
 
     library_import: LibraryImportState,
     part_lookup: PartLookupState,
+    bom: BomState,
 
     /// Mouser/DigiKey API credentials — global (not per-project), see
     /// `GlobalSettings`. Loaded once at startup, saved back whenever
@@ -157,6 +159,7 @@ impl MainApp {
             status: String::new(),
             library_import: LibraryImportState::default(),
             part_lookup: PartLookupState::default(),
+            bom: BomState::default(),
             mouser_api_key: global_settings.mouser_api_key,
             digikey_client_id: global_settings.digikey_client_id,
             digikey_client_secret: global_settings.digikey_client_secret,
@@ -275,14 +278,30 @@ impl MainApp {
         }
     }
 
-    /// Same pattern as `open_library_import` just below: validate/save
-    /// the destination settings first, then open the dialog.
+    /// Unlike `open_library_import`, doesn't run `build_settings` — that
+    /// also demands symbol/footprint library paths, which matter only to
+    /// the actual symbol/footprint *import* flow. Populate BOM just reads
+    /// the schematic and writes vendor properties back onto it, so a
+    /// project directory is all it actually needs.
     fn open_part_lookup(&mut self) {
-        if self.build_settings(false).is_none() {
+        if self.project_dir().is_none() {
+            self.status = "Choose a KiCad project first.".to_string();
             return;
         }
         self.save_config();
         self.part_lookup.open = true;
+    }
+
+    /// Same reasoning as `open_part_lookup` just above — Generate BOM
+    /// only reads the schematic and queries vendors, it never touches
+    /// the symbol/footprint libraries.
+    fn open_generate_bom(&mut self) {
+        if self.project_dir().is_none() {
+            self.status = "Choose a KiCad project first.".to_string();
+            return;
+        }
+        self.save_config();
+        self.bom.open = true;
     }
 
     /// A single button that pops out the Mouser/DigiKey credential
@@ -945,15 +964,10 @@ impl eframe::App for MainApp {
                         });
 
                         ui.add_space(10.0);
-                        ui.horizontal(|ui| {
-                            // Slightly smaller than before (was 190/180):
-                            // fitting "Populate BOM" onto this same row
-                            // as a fifth button needed a little of that
-                            // width back to avoid overflowing the
-                            // window's default size.
-                            let toggle_size = egui::vec2(175.0, 44.0);
-                            let action_size = egui::vec2(155.0, 44.0);
+                        let toggle_size = egui::vec2(175.0, 44.0);
+                        let action_size = egui::vec2(155.0, 44.0);
 
+                        ui.horizontal(|ui| {
                             let toggle_resp = if watching {
                                 ui.add_sized(
                                     toggle_size,
@@ -990,6 +1004,18 @@ impl eframe::App for MainApp {
                             if ui
                                 .add_sized(
                                     action_size,
+                                    theme::accent_button(format!(
+                                        "{}  Populate BOM",
+                                        icon::MAGNIFYING_GLASS
+                                    )),
+                                )
+                                .clicked()
+                            {
+                                self.open_part_lookup();
+                            }
+                            if ui
+                                .add_sized(
+                                    action_size,
                                     egui::Button::new(format!(
                                         "{}  Import ZIP\u{2026}",
                                         icon::FILE_ZIP
@@ -1022,18 +1048,6 @@ impl eframe::App for MainApp {
                                 .clicked()
                             {
                                 self.open_library_import();
-                            }
-                            if ui
-                                .add_sized(
-                                    action_size,
-                                    theme::accent_button(format!(
-                                        "{}  Populate BOM",
-                                        icon::MAGNIFYING_GLASS
-                                    )),
-                                )
-                                .clicked()
-                            {
-                                self.open_part_lookup();
                             }
                         });
 
@@ -1126,6 +1140,26 @@ impl eframe::App for MainApp {
             };
             let project_dir = self.project_dir().unwrap_or_default();
             part_lookup_ui::show(&mut self.part_lookup, ctx, &project_dir, &credentials);
+            // "Generate BOM" lives as a button inside the Populate BOM
+            // window (see part_lookup_ui.rs) rather than as its own
+            // top-level main-window button, but the two are still
+            // separate windows/states — this window can't reach
+            // `self.bom` directly, so it just raises a flag for us to
+            // act on here.
+            if self.part_lookup.open_bom_requested {
+                self.part_lookup.open_bom_requested = false;
+                self.open_generate_bom();
+            }
+        }
+
+        if self.bom.open {
+            let credentials = kicad_auto_importer_core::parts_lookup::PartsCredentials {
+                mouser_api_key: self.mouser_api_key.clone(),
+                digikey_client_id: self.digikey_client_id.clone(),
+                digikey_client_secret: self.digikey_client_secret.clone(),
+            };
+            let project_dir = self.project_dir().unwrap_or_default();
+            bom_ui::show(&mut self.bom, ctx, &project_dir, &credentials);
         }
 
         window_chrome::resize_grip(ctx, "main");

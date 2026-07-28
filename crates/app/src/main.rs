@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod bom_ui;
 mod icon;
 mod icon_colors;
 mod icon_render;
