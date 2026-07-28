@@ -341,6 +341,29 @@ pub fn extract_footprint_ref(sym_node: &SexpNode) -> Option<String> {
     result
 }
 
+/// Reads back a top-level `(property "<key>" "<value>")` previously
+/// written by [`set_symbol_property`] — same direct-children-only scope
+/// (never descends into multi-unit sub-symbols), so this only ever sees
+/// what that setter could have written.
+pub fn get_symbol_property(sym_node: &SexpNode, key: &str) -> Option<String> {
+    sym_node.children.iter().find_map(|child| {
+        let Child::Node(node) = child else {
+            return None;
+        };
+        if node.name != "property" {
+            return None;
+        }
+        let is_match = matches!(node.children.first(), Some(Child::Atom(a)) if a.text() == key);
+        if !is_match {
+            return None;
+        }
+        match node.children.get(1) {
+            Some(Child::Atom(v)) => Some(v.text().to_string()),
+            _ => None,
+        }
+    })
+}
+
 /// Sets a top-level `(property "<key>" "<value>")` on `sym_node`,
 /// replacing its value if the property already exists or appending a
 /// brand new (hidden — see below) one otherwise. Used to annotate a
@@ -469,6 +492,22 @@ mod tests {
         assert_eq!(
             extract_footprint_ref(&node).as_deref(),
             Some("NewLib:RenamedFP")
+        );
+    }
+
+    #[test]
+    fn get_symbol_property_returns_none_when_absent() {
+        let node = sample_symbol("Widget", "MyLib:MyFP");
+        assert_eq!(get_symbol_property(&node, "Last Checked"), None);
+    }
+
+    #[test]
+    fn get_symbol_property_reads_back_what_set_symbol_property_wrote() {
+        let mut node = sample_symbol("Widget", "MyLib:MyFP");
+        set_symbol_property(&mut node, "Last Checked", "2026-07-27T20:05:00Z");
+        assert_eq!(
+            get_symbol_property(&node, "Last Checked").as_deref(),
+            Some("2026-07-27T20:05:00Z")
         );
     }
 

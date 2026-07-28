@@ -77,7 +77,12 @@ pub enum ReportError {
 const PAGE_WIDTH: f32 = 297.0;
 const PAGE_HEIGHT: f32 = 210.0;
 const MARGIN: f32 = 15.0;
+/// A single-line row's height — also doubles as the header row's fixed
+/// height, since column labels never wrap.
 const ROW_HEIGHT: f32 = 7.0;
+/// Extra height a data row grows by per wrapped line beyond its first —
+/// see [`row_height`].
+const LINE_STEP: f32 = 4.0;
 const ROW_FONT_SIZE: f32 = 9.0;
 const HEADER_FONT_SIZE: f32 = 9.0;
 /// Columns as (label, width in mm) — widths sum to exactly
@@ -109,17 +114,139 @@ const HEADER_BG: (f32, f32, f32) = (0.20, 0.22, 0.26);
 const ZEBRA_BG: (f32, f32, f32) = (0.95, 0.95, 0.96);
 const FLAGGED_BG: (f32, f32, f32) = (0.98, 0.85, 0.85);
 
-/// Truncates to at most `max_chars`, appending `"..."` when it does —
-/// plain ASCII ellipsis rather than the Unicode `…` glyph, to stay
-/// safely inside the built-in fonts' WinAnsi-only coverage.
-fn truncate(s: &str, max_chars: usize) -> String {
-    if s.chars().count() <= max_chars {
-        return s.to_string();
+// ── text measurement & word-wrap ────────────────────────────────────────
+//
+// No ellipsis truncation: every cell wraps onto as many lines as it
+// needs so the full value is always visible (a row just grows taller).
+// That requires knowing each character's actual rendered width, which
+// `printpdf`'s built-in Base14 fonts don't expose — the crate only
+// computes glyph widths for *embedded* TTF fonts (see `font.rs`'s
+// `font_metrics()`), since built-in fonts are never parsed, just
+// referenced by name and rendered by whatever the PDF viewer ships.
+//
+// So the two tables below hardcode the standard Adobe Core 14 metrics
+// for Helvetica/Helvetica-Bold — public, unchanging, part of the PDF
+// spec itself (the same numbers ship in every PDF-capable toolchain,
+// e.g. Ghostscript's and matplotlib's bundled `Helvetica.afm`) — for
+// the WinAnsi/ASCII printable range (32..=126), which is all this
+// report ever renders. `WX` (width in 1/1000 em) per character code,
+// index 0 == code 32 (space).
+const HELVETICA_WIDTHS: [u16; 95] = [
+    278, 278, 355, 556, 556, 889, 667, 222, 333, 333, 389, 584, 278, 333, 278, 278, 556, 556, 556,
+    556, 556, 556, 556, 556, 556, 556, 278, 278, 584, 584, 584, 556, 1015, 667, 667, 722, 722, 667,
+    611, 778, 722, 278, 500, 667, 556, 833, 722, 778, 667, 778, 722, 667, 611, 722, 667, 944, 667,
+    667, 611, 278, 278, 278, 469, 556, 222, 556, 556, 500, 556, 556, 278, 556, 556, 222, 222, 500,
+    222, 833, 556, 556, 556, 556, 333, 500, 278, 556, 500, 722, 500, 500, 500, 334, 260, 334, 584,
+];
+const HELVETICA_BOLD_WIDTHS: [u16; 95] = [
+    278, 333, 474, 556, 556, 889, 722, 278, 333, 333, 389, 584, 278, 333, 278, 278, 556, 556, 556,
+    556, 556, 556, 556, 556, 556, 556, 333, 333, 584, 584, 584, 611, 975, 722, 722, 722, 722, 667,
+    611, 778, 722, 278, 556, 722, 611, 833, 722, 778, 667, 778, 722, 667, 611, 722, 667, 944, 667,
+    667, 611, 333, 278, 333, 584, 556, 278, 556, 611, 556, 611, 556, 333, 611, 611, 278, 278, 556,
+    278, 889, 611, 611, 611, 611, 389, 556, 333, 611, 556, 778, 556, 556, 500, 389, 280, 389, 584,
+];
+/// 1000 units/em, and 1pt == 1/72in == 0.352778mm.
+const PT_TO_MM: f32 = 0.352778;
+
+/// A non-ASCII/control character has no entry in the tables above (this
+/// report's content is names/part numbers/URLs — effectively always
+/// ASCII in practice); `556` is Helvetica's digit/most-common-glyph
+/// width, a reasonable stand-in so one stray character doesn't throw
+/// off wrapping.
+fn char_width_mm(c: char, size_pt: f32, bold: bool) -> f32 {
+    let code = c as u32;
+    let units = if (32..=126).contains(&code) {
+        let table = if bold {
+            &HELVETICA_BOLD_WIDTHS
+        } else {
+            &HELVETICA_WIDTHS
+        };
+        table[(code - 32) as usize]
+    } else {
+        556
+    };
+    (units as f32 / 1000.0) * size_pt * PT_TO_MM
+}
+
+fn text_width_mm(text: &str, size_pt: f32, bold: bool) -> f32 {
+    text.chars().map(|c| char_width_mm(c, size_pt, bold)).sum()
+}
+
+/// Breaks a single token with no wrap points of its own (a part number,
+/// typically) across as many lines as it takes to fit `max_width_mm` —
+/// purely character-greedy, since a bare digit/letter run has nothing
+/// more natural to break on.
+fn hard_break(word: &str, max_width_mm: f32, size_pt: f32, bold: bool) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    let mut width = 0.0;
+    for ch in word.chars() {
+        let w = char_width_mm(ch, size_pt, bold);
+        if !current.is_empty() && width + w > max_width_mm {
+            lines.push(std::mem::take(&mut current));
+            width = 0.0;
+        }
+        current.push(ch);
+        width += w;
     }
-    let keep = max_chars.saturating_sub(3);
-    let mut out: String = s.chars().take(keep).collect();
-    out.push_str("...");
-    out
+    if !current.is_empty() || lines.is_empty() {
+        lines.push(current);
+    }
+    lines
+}
+
+/// Greedy word-wrap of `text` to `max_width_mm`, falling back to
+/// [`hard_break`] for any single word that alone exceeds the width
+/// (e.g. an MPN with no spaces) — real word-wrap where there's
+/// whitespace to break on, character-wrap only where there isn't.
+/// Never drops or truncates anything; always returns at least one
+/// (possibly empty) line.
+fn wrap_text(text: &str, max_width_mm: f32, size_pt: f32, bold: bool) -> Vec<String> {
+    if text.is_empty() {
+        return vec![String::new()];
+    }
+    let space_width = char_width_mm(' ', size_pt, bold);
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    let mut current_width = 0.0;
+
+    for word in text.split(' ') {
+        let word_width = text_width_mm(word, size_pt, bold);
+        let with_sep = if current.is_empty() {
+            word_width
+        } else {
+            current_width + space_width + word_width
+        };
+        if with_sep <= max_width_mm {
+            if !current.is_empty() {
+                current.push(' ');
+            }
+            current.push_str(word);
+            current_width = with_sep;
+            continue;
+        }
+
+        if !current.is_empty() {
+            lines.push(std::mem::take(&mut current));
+        }
+        if word_width <= max_width_mm {
+            current = word.to_string();
+            current_width = word_width;
+        } else {
+            let mut broken = hard_break(word, max_width_mm, size_pt, bold);
+            let last = broken.pop().unwrap_or_default();
+            lines.extend(broken);
+            current_width = text_width_mm(&last, size_pt, bold);
+            current = last;
+        }
+    }
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    lines
 }
 
 struct Fonts {
@@ -157,14 +284,27 @@ impl TextStyle {
     }
 }
 
+/// Draws `text` at `(x, y)`, hard-clipped to `clip_width` mm — belt and
+/// suspenders alongside `truncate`'s character-count trimming below:
+/// Helvetica is proportional, so no fixed character budget is ever a
+/// *guaranteed* fit (a digit-heavy string like an MPN can render
+/// noticeably wider than a same-length word), and an underestimate used
+/// to mean this cell's text visibly ran into the next column's. Clipping
+/// makes that geometrically impossible — worst case, long text is cut
+/// off flush at the column boundary instead of overlapping.
 fn draw_text(
     layer: &PdfLayerReference,
     fonts: &Fonts,
     text: &str,
     x: f32,
     y: f32,
+    clip_width: f32,
     style: TextStyle,
 ) {
+    layer.save_graphics_state();
+    layer.add_rect(
+        Rect::new(Mm(x), Mm(y - 2.5), Mm(x + clip_width), Mm(y + 5.0)).with_mode(PaintMode::Clip),
+    );
     layer.set_fill_color(text_color(style.color));
     let font = if style.bold {
         &fonts.bold
@@ -172,6 +312,13 @@ fn draw_text(
         &fonts.regular
     };
     layer.use_text(text, style.size, Mm(x), Mm(y), font);
+    layer.restore_graphics_state();
+}
+
+/// A column's usable width for [`draw_text`]'s clip, i.e. its full
+/// width minus the `1.5mm` left inset every cell is drawn at.
+fn column_width(index: usize) -> f32 {
+    COLUMNS[index].1 - 1.5
 }
 
 /// Draws the table's column header row at `y`, returning the y for the
@@ -193,17 +340,108 @@ fn draw_column_header(layer: &PdfLayerReference, fonts: &Fonts, y: f32) -> f32 {
             label,
             column_x(i) + 1.5,
             y - ROW_HEIGHT + 4.5,
+            column_width(i),
             style,
         );
     }
     y - ROW_HEIGHT
 }
 
-/// Draws one data row at `y` (the row's *top*), returning the y for the
-/// next row below it.
-fn draw_row(layer: &PdfLayerReference, fonts: &Fonts, y: f32, index: usize, row: &ReportRow) {
-    let in_stock = row.in_stock();
-    let bg = if row.needs_attention() {
+/// A row's total height for `n_lines` (the most any of its cells wraps
+/// to) — `ROW_HEIGHT` covers the first line (plus top/bottom padding),
+/// each additional line grows the row by exactly `LINE_STEP`.
+fn row_height(n_lines: usize) -> f32 {
+    ROW_HEIGHT + n_lines.saturating_sub(1) as f32 * LINE_STEP
+}
+
+/// One column's pre-wrapped lines plus the style to draw them in.
+struct WrappedCell {
+    lines: Vec<String>,
+    style: TextStyle,
+}
+
+/// Word-wraps every cell of `row` against its own column's width and
+/// works out the resulting row height — pulled apart from actually
+/// drawing (`draw_wrapped_row`) so the pagination loop in `generate` can
+/// ask "how tall will this row be" *before* committing to drawing it on
+/// the current page.
+fn wrap_row(row: &ReportRow) -> (Vec<WrappedCell>, f32) {
+    let plain = TextStyle::new(ROW_FONT_SIZE, false, BLACK);
+    let cell = |text: &str, col: usize, style: TextStyle| WrappedCell {
+        lines: wrap_text(text, column_width(col), style.size, style.bold),
+        style,
+    };
+
+    let mut cols = Vec::with_capacity(COLUMNS.len());
+    cols.push(cell(&row.reference, 0, plain));
+    cols.push(cell(&row.symbol, 1, plain));
+
+    match &row.outcome {
+        Ok(info) => {
+            cols.push(cell(&info.manufacturer, 2, plain));
+            cols.push(cell(&info.mpn, 3, plain));
+
+            let stock_text = info
+                .offers
+                .iter()
+                .map(|o| format!("{}: {}", o.seller, o.stock_summary))
+                .collect::<Vec<_>>()
+                .join(" | ");
+            cols.push(cell(&stock_text, 4, plain));
+
+            let lifecycle_concern = info.lifecycle_concern();
+            let lifecycle_text = info
+                .offers
+                .iter()
+                .map(|o| o.lifecycle_summary.as_str())
+                .collect::<Vec<_>>()
+                .join(" | ");
+            let lifecycle_style = TextStyle::new(
+                ROW_FONT_SIZE,
+                lifecycle_concern,
+                if lifecycle_concern { RED } else { BLACK },
+            );
+            cols.push(cell(&lifecycle_text, 5, lifecycle_style));
+
+            let (status, color) = if !info.in_stock() {
+                ("NOT IN STOCK", RED)
+            } else if lifecycle_concern {
+                ("OBSOLETE/EOL", RED)
+            } else {
+                ("OK", GREEN)
+            };
+            cols.push(cell(status, 6, TextStyle::new(ROW_FONT_SIZE, true, color)));
+        }
+        Err(msg) => {
+            cols.push(cell("-", 2, plain));
+            cols.push(cell(msg, 3, TextStyle::new(ROW_FONT_SIZE, false, RED)));
+            cols.push(cell("", 4, plain));
+            cols.push(cell("", 5, plain));
+            cols.push(cell(
+                "LOOKUP FAILED",
+                6,
+                TextStyle::new(ROW_FONT_SIZE, true, RED),
+            ));
+        }
+    }
+
+    let n_lines = cols.iter().map(|c| c.lines.len()).max().unwrap_or(1).max(1);
+    (cols, row_height(n_lines))
+}
+
+/// Draws one already-wrapped data row at `y` (the row's *top*, height
+/// `height` as returned by `wrap_row`), returning the y for the next
+/// row below it.
+fn draw_wrapped_row(
+    layer: &PdfLayerReference,
+    fonts: &Fonts,
+    y: f32,
+    height: f32,
+    index: usize,
+    needs_attention: bool,
+    cols: &[WrappedCell],
+) {
+    let bg = if needs_attention {
         FLAGGED_BG
     } else if index % 2 == 1 {
         ZEBRA_BG
@@ -213,118 +451,18 @@ fn draw_row(layer: &PdfLayerReference, fonts: &Fonts, y: f32, index: usize, row:
     fill_rect(
         layer,
         MARGIN,
-        y - ROW_HEIGHT + 2.0,
+        y - height + 2.0,
         PAGE_WIDTH - 2.0 * MARGIN,
-        ROW_HEIGHT,
+        height,
         bg,
     );
 
-    let text_y = y - ROW_HEIGHT + 4.5;
-    let plain = TextStyle::new(ROW_FONT_SIZE, false, BLACK);
-    draw_text(
-        layer,
-        fonts,
-        &row.reference,
-        column_x(0) + 1.5,
-        text_y,
-        plain,
-    );
-    draw_text(
-        layer,
-        fonts,
-        &truncate(&row.symbol, 24),
-        column_x(1) + 1.5,
-        text_y,
-        plain,
-    );
-
-    match &row.outcome {
-        Ok(info) => {
-            draw_text(
-                layer,
-                fonts,
-                &truncate(&info.manufacturer, 30),
-                column_x(2) + 1.5,
-                text_y,
-                plain,
-            );
-            draw_text(
-                layer,
-                fonts,
-                &truncate(&info.mpn, 26),
-                column_x(3) + 1.5,
-                text_y,
-                plain,
-            );
-            let stock_text = info
-                .offers
-                .iter()
-                .map(|o| format!("{}: {}", o.seller, o.stock_summary))
-                .collect::<Vec<_>>()
-                .join(" | ");
-            draw_text(
-                layer,
-                fonts,
-                &truncate(&stock_text, 32),
-                column_x(4) + 1.5,
-                text_y,
-                plain,
-            );
-            let lifecycle_concern = info.lifecycle_concern();
-            let lifecycle_text = info
-                .offers
-                .iter()
-                .map(|o| o.lifecycle_summary.as_str())
-                .collect::<Vec<_>>()
-                .join(" | ");
-            draw_text(
-                layer,
-                fonts,
-                &truncate(&lifecycle_text, 24),
-                column_x(5) + 1.5,
-                text_y,
-                TextStyle::new(
-                    ROW_FONT_SIZE,
-                    lifecycle_concern,
-                    if lifecycle_concern { RED } else { BLACK },
-                ),
-            );
-            let (status, color) = if !in_stock {
-                ("NOT IN STOCK", RED)
-            } else if lifecycle_concern {
-                ("OBSOLETE/EOL", RED)
-            } else {
-                ("OK", GREEN)
-            };
-            draw_text(
-                layer,
-                fonts,
-                status,
-                column_x(6) + 1.5,
-                text_y,
-                TextStyle::new(ROW_FONT_SIZE, true, color),
-            );
-        }
-        Err(msg) => {
-            draw_text(layer, fonts, "-", column_x(2) + 1.5, text_y, plain);
-            draw_text(
-                layer,
-                fonts,
-                &truncate(msg, 20),
-                column_x(3) + 1.5,
-                text_y,
-                TextStyle::new(ROW_FONT_SIZE, false, RED),
-            );
-            draw_text(layer, fonts, "", column_x(4) + 1.5, text_y, plain);
-            draw_text(layer, fonts, "", column_x(5) + 1.5, text_y, plain);
-            draw_text(
-                layer,
-                fonts,
-                "LOOKUP FAILED",
-                column_x(6) + 1.5,
-                text_y,
-                TextStyle::new(ROW_FONT_SIZE, true, RED),
-            );
+    for (i, col) in cols.iter().enumerate() {
+        let x = column_x(i) + 1.5;
+        let width = column_width(i);
+        for (line_idx, line) in col.lines.iter().enumerate() {
+            let line_y = y - ROW_HEIGHT + 4.5 - line_idx as f32 * LINE_STEP;
+            draw_text(layer, fonts, line, x, line_y, width, col.style);
         }
     }
 }
@@ -383,12 +521,14 @@ pub fn generate(
     let not_in_stock = rows.iter().filter(|r| !r.in_stock()).count();
     let lifecycle_flagged = rows.iter().filter(|r| r.lifecycle_concern()).count();
 
+    let full_width = PAGE_WIDTH - 2.0 * MARGIN;
     draw_text(
         &layer,
         &fonts,
         "BOM Stock Report",
         MARGIN,
         PAGE_HEIGHT - MARGIN,
+        full_width,
         TextStyle::new(18.0, true, BLACK),
     );
     draw_text(
@@ -397,6 +537,7 @@ pub fn generate(
         &format!("{project_name}  \u{2014}  generated {generated_at}"),
         MARGIN,
         PAGE_HEIGHT - MARGIN - 7.0,
+        full_width,
         TextStyle::new(10.0, false, BLACK),
     );
     let summary = format!(
@@ -410,6 +551,7 @@ pub fn generate(
         &summary,
         MARGIN,
         PAGE_HEIGHT - MARGIN - 14.0,
+        full_width,
         TextStyle::new(
             11.0,
             true,
@@ -424,13 +566,14 @@ pub fn generate(
     let mut y = draw_column_header(&layer, &fonts, PAGE_HEIGHT - MARGIN - 22.0);
 
     for (i, row) in rows.iter().enumerate() {
-        if y - ROW_HEIGHT < MARGIN {
+        let (cols, height) = wrap_row(row);
+        if y - height < MARGIN {
             let (page_idx, layer_idx) = doc.add_page(Mm(PAGE_WIDTH), Mm(PAGE_HEIGHT), "Layer 1");
             layer = doc.get_page(page_idx).get_layer(layer_idx);
             y = draw_column_header(&layer, &fonts, PAGE_HEIGHT - MARGIN);
         }
-        draw_row(&layer, &fonts, y, i, row);
-        y -= ROW_HEIGHT;
+        draw_wrapped_row(&layer, &fonts, y, height, i, row.needs_attention(), &cols);
+        y -= height;
     }
 
     if let Some(parent) = out_path.parent() {
@@ -526,16 +669,74 @@ mod tests {
         assert!((total - (PAGE_WIDTH - 2.0 * MARGIN)).abs() < 0.01);
     }
 
+    // ── text measurement & word-wrap ─────────────────────────────────
+
     #[test]
-    fn truncate_leaves_short_strings_untouched() {
-        assert_eq!(truncate("R1", 10), "R1");
+    fn width_tables_cover_the_full_ascii_printable_range() {
+        assert_eq!(HELVETICA_WIDTHS.len(), 95);
+        assert_eq!(HELVETICA_BOLD_WIDTHS.len(), 95);
     }
 
     #[test]
-    fn truncate_shortens_and_marks_long_strings() {
-        let out = truncate("a very long manufacturer name indeed", 10);
-        assert_eq!(out.chars().count(), 10);
-        assert!(out.ends_with("..."));
+    fn wider_characters_measure_wider_than_narrower_ones() {
+        // 'i' (narrow) vs 'M' (wide) at the same size/weight.
+        assert!(char_width_mm('i', 9.0, false) < char_width_mm('M', 9.0, false));
+    }
+
+    #[test]
+    fn bold_measures_at_least_as_wide_as_regular() {
+        for c in ['R', '1', ' '] {
+            assert!(char_width_mm(c, 9.0, true) >= char_width_mm(c, 9.0, false));
+        }
+    }
+
+    #[test]
+    fn wrap_text_never_drops_content_short_text_stays_one_line() {
+        let lines = wrap_text("R1", 50.0, 9.0, false);
+        assert_eq!(lines, vec!["R1".to_string()]);
+    }
+
+    #[test]
+    fn wrap_text_never_exceeds_the_given_width() {
+        let text = "Samsung Electro-Mechanics CL21B224KBFVPNE some more trailing words here";
+        let max_width = 30.0;
+        let lines = wrap_text(text, max_width, 9.0, false);
+        assert!(lines.len() > 1, "expected wrapping across multiple lines");
+        for line in &lines {
+            assert!(
+                text_width_mm(line, 9.0, false) <= max_width + 0.01,
+                "line '{line}' exceeds {max_width}mm"
+            );
+        }
+        // Every word survives somewhere, in original order, nothing
+        // dropped or ellipsized.
+        assert_eq!(lines.join(" "), text);
+    }
+
+    #[test]
+    fn wrap_text_hard_breaks_a_single_token_wider_than_the_column() {
+        // No spaces at all — must still split across lines rather than
+        // overflowing or silently truncating.
+        let text = "MMASU105SB5104KFNA01";
+        let max_width = 15.0;
+        let lines = wrap_text(text, max_width, 9.0, false);
+        assert!(lines.len() > 1);
+        for line in &lines {
+            assert!(text_width_mm(line, 9.0, false) <= max_width + 0.01);
+        }
+        assert_eq!(lines.concat(), text);
+    }
+
+    #[test]
+    fn wrap_text_of_empty_string_is_one_empty_line() {
+        assert_eq!(wrap_text("", 50.0, 9.0, false), vec![String::new()]);
+    }
+
+    #[test]
+    fn row_height_grows_by_line_step_per_extra_line() {
+        assert_eq!(row_height(1), ROW_HEIGHT);
+        assert_eq!(row_height(2), ROW_HEIGHT + LINE_STEP);
+        assert_eq!(row_height(3), ROW_HEIGHT + 2.0 * LINE_STEP);
     }
 
     #[test]

@@ -550,7 +550,10 @@ mod tests {
             "Last Time Buy",
             "End of Life",
         ] {
-            assert!(is_lifecycle_concern(text), "expected '{text}' to be flagged");
+            assert!(
+                is_lifecycle_concern(text),
+                "expected '{text}' to be flagged"
+            );
         }
     }
 

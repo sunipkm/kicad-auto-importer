@@ -37,7 +37,6 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread;
 
-use chrono::TimeZone;
 use egui::{Color32, RichText};
 use egui_extras::{Column, TableBuilder};
 use egui_phosphor::regular as icon;
@@ -45,6 +44,14 @@ use egui_phosphor::regular as icon;
 use kicad_auto_importer_core::bom_report::{self, ReportRow};
 use kicad_auto_importer_core::parts_lookup::{self, PartsCredentials};
 use kicad_auto_importer_core::schematic::{self, PlacedSymbol, SchematicFile};
+use kicad_auto_importer_core::sexp::SexpNode;
+use kicad_auto_importer_core::symbol_importer::{get_symbol_property, set_symbol_property};
+
+/// Below this age, a part's `Last Checked` property is considered fresh
+/// enough to skip re-querying Mouser/DigiKey for — see `run_lookup_batch`.
+/// Force-re-check bypasses this from the UI.
+const RECHECK_THRESHOLD: chrono::Duration = chrono::Duration::hours(24);
+const LAST_CHECKED_PROPERTY: &str = "Last Checked";
 
 use crate::theme::{self, ACCENT, DANGER, OK};
 
@@ -54,6 +61,7 @@ enum LookupEvent {
         index: usize,
         ok: bool,
         needs_attention: bool,
+        skipped: bool,
         summary: String,
     },
     Done,
@@ -63,10 +71,14 @@ enum LookupEvent {
 /// column and kept until the next reload or batch. `needs_attention` is
 /// only meaningful when `ok` is true (a found part that's either not
 /// confirmed in stock or flagged obsolete/EOL/NRND by some vendor); a
-/// failed lookup is already flagged by `ok` alone.
+/// failed lookup is already flagged by `ok` alone. `skipped` means the
+/// row was left untouched because it was already checked within
+/// `RECHECK_THRESHOLD` and Force wasn't on — `ok`/`needs_attention` are
+/// meaningless in that case (always `true`/`false`).
 struct RowResult {
     ok: bool,
     needs_attention: bool,
+    skipped: bool,
     summary: String,
 }
 
@@ -104,6 +116,10 @@ pub struct PartLookupState {
     results: HashMap<usize, RowResult>,
     progress_done: usize,
     progress_total: usize,
+    /// Bypasses the 24h "checked recently, skip it" gate — see
+    /// `run_lookup_batch`. Opt-in (defaults off) since the whole point
+    /// of the gate is to avoid hammering Mouser/DigiKey on every run.
+    force_recheck: bool,
 }
 
 impl PartLookupState {
@@ -162,9 +178,10 @@ impl PartLookupState {
                         index,
                         ok,
                         needs_attention,
+                        skipped,
                         summary,
                     } => {
-                        results.push((index, ok, needs_attention, summary));
+                        results.push((index, ok, needs_attention, skipped, summary));
                     }
                     LookupEvent::Done => done = true,
                 }
@@ -173,13 +190,14 @@ impl PartLookupState {
         for line in lines {
             self.log(line);
         }
-        for (index, ok, needs_attention, summary) in results {
+        for (index, ok, needs_attention, skipped, summary) in results {
             self.progress_done += 1;
             self.results.insert(
                 index,
                 RowResult {
                     ok,
                     needs_attention,
+                    skipped,
                     summary,
                 },
             );
@@ -218,6 +236,28 @@ impl PartLookupState {
             })
             .collect();
 
+        let project_name = project_dir
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "project".to_string());
+        let default_report_name = format!(
+            "{}_stock_report_{}.pdf",
+            project_name.replace(' ', "_"),
+            chrono::Utc::now().format("%Y%m%d_%H%M%S")
+        );
+        // Asked every run rather than remembered, so the report never
+        // silently lands somewhere the user didn't just choose — see
+        // `browse_project`/`browse_watch_folder` for the same
+        // ask-every-time pattern with `rfd::FileDialog`. Cancelling
+        // still runs the batch (the schematic write-back matters
+        // regardless); it just falls back to the project root.
+        let report_path = rfd::FileDialog::new()
+            .set_directory(project_dir)
+            .set_file_name(&default_report_name)
+            .add_filter("PDF", &["pdf"])
+            .save_file()
+            .unwrap_or_else(|| project_dir.join(&default_report_name));
+
         self.progress_done = 0;
         self.progress_total = selected.len();
 
@@ -225,10 +265,12 @@ impl PartLookupState {
         self.rx = Some(rx);
         self.in_progress = true;
 
-        let project_dir = project_dir.to_path_buf();
+        let force = self.force_recheck;
         thread::Builder::new()
             .name("part-lookup".into())
-            .spawn(move || run_lookup_batch(selected, project_dir, credentials, tx))
+            .spawn(move || {
+                run_lookup_batch(selected, project_name, report_path, force, credentials, tx)
+            })
             .expect("failed to spawn the part-lookup thread");
     }
 }
@@ -239,23 +281,42 @@ impl PartLookupState {
 /// end — same batching `library_import::import_symbols` uses for its
 /// own destination library, and for the same reason: cheap, and avoids
 /// re-reading/re-writing a whole file for every single row in it.
+///
+/// Before actually querying a vendor, checks that row's own
+/// `Last Checked` property (written after every *attempted* lookup,
+/// success or failure — see below) and skips it if younger than
+/// `RECHECK_THRESHOLD`, unless `force` is set. This is a per-part gate,
+/// not a whole-batch one: "Select All" + Populate BOM on day 2 only
+/// actually re-queries the parts that have gone stale since day 1,
+/// which is the whole point — Mouser/DigiKey rate limits and plain
+/// courtesy both argue against re-fetching a part's stock status every
+/// time the button is clicked.
 fn run_lookup_batch(
     selected: Vec<SelectedRow>,
-    project_dir: PathBuf,
+    project_name: String,
+    report_path: PathBuf,
+    force: bool,
     credentials: PartsCredentials,
     tx: mpsc::Sender<LookupEvent>,
 ) {
     let send_log = |msg: String| {
         let _ = tx.send(LookupEvent::Log(msg));
     };
-    let send_result = |index: usize, ok: bool, needs_attention: bool, summary: String| {
-        let _ = tx.send(LookupEvent::RowResult {
-            index,
-            ok,
-            needs_attention,
-            summary,
-        });
-    };
+    let send_result =
+        |index: usize, ok: bool, needs_attention: bool, skipped: bool, summary: String| {
+            let _ = tx.send(LookupEvent::RowResult {
+                index,
+                ok,
+                needs_attention,
+                skipped,
+                summary,
+            });
+        };
+
+    // One shared timestamp for the whole batch — a run takes seconds to
+    // low minutes, so there's no meaningful staleness difference between
+    // rows checked at the start vs. the end of it.
+    let now = chrono::Utc::now();
 
     // Keyed by the row's original index (not push order) so the report
     // below can be emitted in the same natural-reference order the
@@ -270,6 +331,7 @@ fn run_lookup_batch(
 
     let mut ok_count = 0usize;
     let mut err_count = 0usize;
+    let mut skipped_count = 0usize;
 
     for (path, rows) in by_file {
         let mut sch = match SchematicFile::open(&path) {
@@ -281,7 +343,7 @@ fn run_lookup_batch(
                 ));
                 for row in &rows {
                     let msg = format!("could not open schematic: {exc}");
-                    send_result(row.index, false, false, msg.clone());
+                    send_result(row.index, false, false, false, msg.clone());
                     report_rows.insert(row.index, report_row(row, Err(msg)));
                     err_count += 1;
                 }
@@ -296,11 +358,27 @@ fn run_lookup_batch(
                     row.reference
                 ));
                 let msg = "no longer on schematic".to_string();
-                send_result(row.index, false, false, msg.clone());
+                send_result(row.index, false, false, false, msg.clone());
                 report_rows.insert(row.index, report_row(row, Err(msg)));
                 err_count += 1;
                 continue;
             };
+
+            if !force {
+                if let Some(age) = last_checked_age(&node, now) {
+                    if age < RECHECK_THRESHOLD {
+                        let summary = format!("Skipped \u{2014} checked {} ago", format_age(age));
+                        send_log(format!(
+                            "\u{23f8} '{}': {summary} (Force to re-check).",
+                            row.reference
+                        ));
+                        send_result(row.index, true, false, true, summary);
+                        skipped_count += 1;
+                        continue;
+                    }
+                }
+            }
+
             let symbol_name = row
                 .lib_id
                 .split_once(':')
@@ -319,6 +397,7 @@ fn run_lookup_batch(
                         send_log(format!("  \u{26a0} '{}': {warning}", row.reference));
                     }
                     parts_lookup::apply_part_info(&mut node, &info);
+                    set_symbol_property(&mut node, LAST_CHECKED_PROPERTY, &now.to_rfc3339());
                     sch.patch_symbol(&row.uuid, &node);
                     let in_stock = info.in_stock();
                     let lifecycle_concern = info.lifecycle_concern();
@@ -339,13 +418,26 @@ fn run_lookup_batch(
                         },
                     );
                     send_log(format!("\u{2714} '{}': {summary}", row.reference));
-                    send_result(row.index, true, !in_stock || lifecycle_concern, summary);
+                    send_result(
+                        row.index,
+                        true,
+                        !in_stock || lifecycle_concern,
+                        false,
+                        summary,
+                    );
                     report_rows.insert(row.index, report_row(row, Ok(info)));
                     ok_count += 1;
                 }
                 Err(exc) => {
+                    // A failed lookup (e.g. no match found) still counts
+                    // as "checked" — without this, a genuinely-not-found
+                    // part would get re-queried on every single run
+                    // forever, which is exactly the hammering the 24h
+                    // gate exists to prevent.
+                    set_symbol_property(&mut node, LAST_CHECKED_PROPERTY, &now.to_rfc3339());
+                    sch.patch_symbol(&row.uuid, &node);
                     send_log(format!("\u{2718} '{}': {exc}", row.reference));
-                    send_result(row.index, false, false, exc.to_string());
+                    send_result(row.index, false, false, false, exc.to_string());
                     report_rows.insert(row.index, report_row(row, Err(exc.to_string())));
                     err_count += 1;
                 }
@@ -362,9 +454,35 @@ fn run_lookup_batch(
         }
     }
 
-    send_log(format!("Done: {ok_count} updated, {err_count} error(s)."));
-    save_stock_report(&project_dir, report_rows, &send_log);
+    send_log(format!(
+        "Done: {ok_count} updated, {err_count} error(s), {skipped_count} skipped (checked recently)."
+    ));
+    save_stock_report(&report_path, &project_name, report_rows, &send_log);
     let _ = tx.send(LookupEvent::Done);
+}
+
+/// How long ago `node`'s `Last Checked` property says it was last
+/// looked up, or `None` if it has none (or an unparseable one — treated
+/// the same as "never checked", i.e. not stale-skipped).
+fn last_checked_age(
+    node: &SexpNode,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Option<chrono::Duration> {
+    let text = get_symbol_property(node, LAST_CHECKED_PROPERTY)?;
+    let last_checked = chrono::DateTime::parse_from_rfc3339(&text).ok()?;
+    Some(now.signed_duration_since(last_checked))
+}
+
+/// e.g. `"45m"`, `"3h"`, `"2d"` — coarse on purpose, this is just for a
+/// log line and a Result-column note, not a precise readout.
+fn format_age(age: chrono::Duration) -> String {
+    if age.num_hours() < 1 {
+        format!("{}m", age.num_minutes().max(0))
+    } else if age.num_hours() < 48 {
+        format!("{}h", age.num_hours())
+    } else {
+        format!("{}d", age.num_days())
+    }
 }
 
 fn report_row(row: &SelectedRow, outcome: Result<parts_lookup::PartInfo, String>) -> ReportRow {
@@ -379,34 +497,39 @@ fn report_row(row: &SelectedRow, outcome: Result<parts_lookup::PartInfo, String>
     }
 }
 
-/// Renders the batch's PDF stock report to
-/// `<project_dir>/bom_stock_report.pdf` (overwritten each run — the
-/// report is a point-in-time snapshot of *this* batch, not a history),
-/// in the same natural-reference order the table itself shows.
+/// Renders the batch's PDF stock report to `report_path` (the location
+/// the user picked via the save dialog in `look_up_selected`), in the
+/// same natural-reference order the table itself shows. Rows skipped by
+/// the 24h staleness gate were never re-checked this run, so they're
+/// simply absent here rather than reported on stale data — the log
+/// already explains why (see `run_lookup_batch`); if every selected row
+/// was skipped, there's nothing meaningful to report at all.
 fn save_stock_report(
-    project_dir: &Path,
+    report_path: &Path,
+    project_name: &str,
     report_rows: HashMap<usize, ReportRow>,
     send_log: &impl Fn(String),
 ) {
+    if report_rows.is_empty() {
+        send_log(
+            "No report generated \u{2014} every selected part was checked within the last 24h."
+                .to_string(),
+        );
+        return;
+    }
+
     let mut ordered: Vec<(usize, ReportRow)> = report_rows.into_iter().collect();
     ordered.sort_by_key(|(i, _)| *i);
     let rows: Vec<ReportRow> = ordered.into_iter().map(|(_, r)| r).collect();
 
-    let project_name = project_dir
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| project_dir.display().to_string());
-    let now = chrono::Utc::now();
-    let unix_secs = now.timestamp() as _;
+    let unix_secs = chrono::Utc::now().timestamp().max(0) as u64;
     let generated_at = bom_report::format_utc_timestamp(unix_secs);
-    let out_path = project_dir.join(format!(
-        "{}_stock_report_{}.pdf",
-        project_name.replace(' ', "_"),
-        now.format("%Y%m%d_%H%M%S")
-    ));
 
-    match bom_report::generate(&rows, &project_name, &generated_at, &out_path) {
-        Ok(()) => send_log(format!("Stock report saved to '{}'.", out_path.display())),
+    match bom_report::generate(&rows, project_name, &generated_at, report_path) {
+        Ok(()) => send_log(format!(
+            "Stock report saved to '{}'.",
+            report_path.display()
+        )),
         Err(exc) => send_log(format!(
             "\u{2718} Could not generate PDF stock report: {exc}"
         )),
@@ -516,6 +639,12 @@ pub fn show(
                     ))
                     .weak(),
                 );
+                ui.add_space(12.0);
+                ui.checkbox(&mut state.force_recheck, "Force re-check")
+                    .on_hover_text(
+                        "Ignore each part's own 24h \u{201c}last checked\u{201d} cooldown and \
+                     re-query Mouser/DigiKey even for parts checked recently.",
+                    );
             });
             ui.add_space(6.0);
         });
@@ -697,7 +826,9 @@ pub fn show(
                                     });
                                     row.col(|ui| {
                                         if let Some(result) = state.results.get(&i) {
-                                            let (glyph, color) = if !result.ok {
+                                            let (glyph, color) = if result.skipped {
+                                                (icon::CLOCK, Color32::from_gray(160))
+                                            } else if !result.ok {
                                                 (icon::X_CIRCLE, DANGER)
                                             } else if result.needs_attention {
                                                 (icon::WARNING_CIRCLE, DANGER)
@@ -724,4 +855,77 @@ pub fn show(
 
         crate::window_chrome::resize_grip(ctx, "part_lookup");
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn node_with_last_checked(rfc3339: &str) -> SexpNode {
+        let mut node =
+            kicad_auto_importer_core::sexp::parse(r#"(symbol (property "Reference" "R1"))"#)
+                .unwrap();
+        set_symbol_property(&mut node, LAST_CHECKED_PROPERTY, rfc3339);
+        node
+    }
+
+    #[test]
+    fn last_checked_age_is_none_when_property_absent() {
+        let node = kicad_auto_importer_core::sexp::parse(r#"(symbol (property "Reference" "R1"))"#)
+            .unwrap();
+        assert!(last_checked_age(&node, chrono::Utc::now()).is_none());
+    }
+
+    #[test]
+    fn last_checked_age_is_none_when_property_unparseable() {
+        let node = node_with_last_checked("not a timestamp");
+        assert!(last_checked_age(&node, chrono::Utc::now()).is_none());
+    }
+
+    #[test]
+    fn last_checked_age_computes_elapsed_duration() {
+        let now = chrono::Utc::now();
+        let checked_at = now - chrono::Duration::hours(5);
+        let node = node_with_last_checked(&checked_at.to_rfc3339());
+
+        let age = last_checked_age(&node, now).unwrap();
+        assert_eq!(age.num_hours(), 5);
+    }
+
+    #[test]
+    fn fresh_last_checked_is_under_the_recheck_threshold() {
+        let now = chrono::Utc::now();
+        let checked_at = now - chrono::Duration::hours(1);
+        let node = node_with_last_checked(&checked_at.to_rfc3339());
+
+        let age = last_checked_age(&node, now).unwrap();
+        assert!(age < RECHECK_THRESHOLD);
+    }
+
+    #[test]
+    fn stale_last_checked_is_over_the_recheck_threshold() {
+        let now = chrono::Utc::now();
+        let checked_at = now - chrono::Duration::hours(25);
+        let node = node_with_last_checked(&checked_at.to_rfc3339());
+
+        let age = last_checked_age(&node, now).unwrap();
+        assert!(age >= RECHECK_THRESHOLD);
+    }
+
+    #[test]
+    fn format_age_uses_minutes_under_an_hour() {
+        assert_eq!(format_age(chrono::Duration::minutes(45)), "45m");
+    }
+
+    #[test]
+    fn format_age_uses_hours_under_two_days() {
+        assert_eq!(format_age(chrono::Duration::hours(5)), "5h");
+        assert_eq!(format_age(chrono::Duration::hours(47)), "47h");
+    }
+
+    #[test]
+    fn format_age_uses_days_at_and_beyond_two_days() {
+        assert_eq!(format_age(chrono::Duration::hours(48)), "2d");
+        assert_eq!(format_age(chrono::Duration::days(5)), "5d");
+    }
 }
