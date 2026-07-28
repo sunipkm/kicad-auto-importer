@@ -49,6 +49,11 @@ pub struct SourceSymbol {
 /// Destination settings for a cross-project import — same shape as
 /// `zip_importer::ImportSettings`'s destination fields, minus the
 /// watch-folder/ZIP-specific ones this flow has no use for.
+///
+/// `Clone` so the app can move an owned copy onto the background thread
+/// `import_symbols` now runs on (see `library_import_ui::import_selected`)
+/// without holding a borrow across the whole batch.
+#[derive(Clone)]
 pub struct CrossImportSettings {
     pub symbol_lib: PathBuf,
     pub footprint_lib: PathBuf,
@@ -309,11 +314,17 @@ pub fn resolve_source_model_path(
 /// Per-symbol failures are logged and counted but never abort the batch.
 /// Returns a `"{n} symbol(s), {m} footprint(s), {k} model(s) imported[,
 /// {e} error(s)]"` summary.
+///
+/// `on_progress(index, total, name)` fires once at the *start* of each
+/// selected symbol (before its footprint/model work), so a caller
+/// driving a progress bar can show what's currently being imported
+/// rather than only what's already finished.
 pub fn import_symbols(
     selected: &[&SourceSymbol],
     source_project_dir: &Path,
     settings: &CrossImportSettings,
     mut log: impl FnMut(&str),
+    mut on_progress: impl FnMut(usize, usize, &str),
 ) -> String {
     let fp_table = load_combined_fp_table(source_project_dir);
 
@@ -344,7 +355,10 @@ pub fn import_symbols(
     let (mut imported_syms, mut imported_fps, mut imported_models, mut errors) =
         (0usize, 0usize, 0usize, 0usize);
 
-    for row in selected {
+    let total = selected.len();
+    for (index, row) in selected.iter().enumerate() {
+        on_progress(index, total, &row.name);
+
         let source_lib = match source_cache.entry(row.sym_lib_path.clone()) {
             std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
             std::collections::hash_map::Entry::Vacant(e) => {
@@ -607,9 +621,13 @@ mod tests {
         };
 
         let mut logs = Vec::new();
-        let summary = import_symbols(&selected, source_dir.path(), &settings, |m| {
-            logs.push(m.to_string())
-        });
+        let summary = import_symbols(
+            &selected,
+            source_dir.path(),
+            &settings,
+            |m| logs.push(m.to_string()),
+            |_, _, _| {},
+        );
         assert!(summary.contains("1 symbol(s)"));
         assert!(summary.contains("1 footprint(s)"));
         assert!(summary.contains("1 model(s)"));
@@ -651,8 +669,20 @@ mod tests {
             overwrite: false,
         };
 
-        import_symbols(&selected, source_dir.path(), &settings, |_| {});
-        let summary = import_symbols(&selected, source_dir.path(), &settings, |_| {});
+        import_symbols(
+            &selected,
+            source_dir.path(),
+            &settings,
+            |_| {},
+            |_, _, _| {},
+        );
+        let summary = import_symbols(
+            &selected,
+            source_dir.path(),
+            &settings,
+            |_| {},
+            |_, _, _| {},
+        );
 
         assert!(summary.contains("0 symbol(s)"));
         assert!(!summary.contains("error"));
@@ -688,9 +718,13 @@ mod tests {
         };
 
         let mut logs = Vec::new();
-        let summary = import_symbols(&selected, source_dir.path(), &settings, |m| {
-            logs.push(m.to_string())
-        });
+        let summary = import_symbols(
+            &selected,
+            source_dir.path(),
+            &settings,
+            |m| logs.push(m.to_string()),
+            |_, _, _| {},
+        );
         assert!(summary.contains("1 symbol(s)"));
         assert!(!summary.contains("error"));
 

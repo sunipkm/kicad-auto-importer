@@ -13,6 +13,8 @@
 
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::sync::mpsc;
+use std::thread;
 
 use egui::{Color32, RichText};
 use egui_extras::{Column, TableBuilder};
@@ -24,6 +26,16 @@ use kicad_auto_importer_core::library_import::{
 };
 
 use crate::theme::{self, ACCENT, DANGER};
+
+enum ImportEvent {
+    Log(String),
+    Progress {
+        done: usize,
+        total: usize,
+        current: String,
+    },
+    Done(String),
+}
 
 #[derive(Default)]
 pub struct LibraryImportState {
@@ -37,6 +49,14 @@ pub struct LibraryImportState {
     last_clicked: Option<usize>,
     log_lines: Vec<String>,
     status: String,
+    rx: Option<mpsc::Receiver<ImportEvent>>,
+    in_progress: bool,
+    progress_done: usize,
+    progress_total: usize,
+    /// The symbol currently being imported — shown alongside the
+    /// progress bar so a long batch shows *what's* happening, not just
+    /// how much of it is left.
+    current_item: String,
 }
 
 impl LibraryImportState {
@@ -128,6 +148,11 @@ impl LibraryImportState {
         });
     }
 
+    /// Runs the actual import on a background thread — same rationale as
+    /// `part_lookup_ui::look_up_selected`: importing several symbols
+    /// (each with footprint + 3-D model copies) can take a visible
+    /// moment, and blocking the GUI thread for it would freeze the
+    /// window and make a progress bar pointless.
     fn import_selected(&mut self, dest: &CrossImportSettings) {
         let Some(source_project_dir) = self.source_project_dir.clone() else {
             self.status = "Choose a source project first.".to_string();
@@ -139,22 +164,79 @@ impl LibraryImportState {
         }
         self.status.clear();
 
-        let selected: Vec<&SourceSymbol> = self
+        let selected: Vec<SourceSymbol> = self
             .rows
             .iter()
             .enumerate()
             .filter(|(i, _)| self.checked.contains(i))
-            .map(|(_, row)| row)
+            .map(|(_, row)| row.clone())
             .collect();
 
+        self.progress_done = 0;
+        self.progress_total = selected.len();
+        self.current_item.clear();
+
+        let (tx, rx) = mpsc::channel();
+        self.rx = Some(rx);
+        self.in_progress = true;
+
+        let dest = dest.clone();
+        thread::Builder::new()
+            .name("library-import".into())
+            .spawn(move || {
+                let selected_refs: Vec<&SourceSymbol> = selected.iter().collect();
+                let tx_log = tx.clone();
+                let tx_progress = tx.clone();
+                let summary = import_symbols(
+                    &selected_refs,
+                    &source_project_dir,
+                    &dest,
+                    move |m| {
+                        let _ = tx_log.send(ImportEvent::Log(m.to_string()));
+                    },
+                    move |done, total, current| {
+                        let _ = tx_progress.send(ImportEvent::Progress {
+                            done,
+                            total,
+                            current: current.to_string(),
+                        });
+                    },
+                );
+                let _ = tx.send(ImportEvent::Done(summary));
+            })
+            .expect("failed to spawn the library-import thread");
+    }
+
+    fn drain_channel(&mut self) {
         let mut lines = Vec::new();
-        let summary = import_symbols(&selected, &source_project_dir, dest, |m| {
-            lines.push(m.to_string())
-        });
+        let mut done_summary = None;
+        if let Some(rx) = &self.rx {
+            while let Ok(event) = rx.try_recv() {
+                match event {
+                    ImportEvent::Log(msg) => lines.push(msg),
+                    ImportEvent::Progress {
+                        done,
+                        total,
+                        current,
+                    } => {
+                        self.progress_done = done;
+                        self.progress_total = total;
+                        self.current_item = current;
+                    }
+                    ImportEvent::Done(summary) => done_summary = Some(summary),
+                }
+            }
+        }
         for line in lines {
             self.log(line);
         }
-        self.log(format!("\u{2714} Done: {summary}"));
+        if let Some(summary) = done_summary {
+            self.log(format!("\u{2714} Done: {summary}"));
+            self.progress_done = self.progress_total;
+            self.current_item.clear();
+            self.in_progress = false;
+            self.rx = None;
+        }
     }
 }
 
@@ -187,6 +269,14 @@ fn description_row_height(ctx: &egui::Context, description: &str) -> f32 {
 pub fn show(state: &mut LibraryImportState, ctx: &egui::Context, dest: &CrossImportSettings) {
     if !state.open {
         return;
+    }
+
+    state.drain_channel();
+    // Polled every frame while a batch is running so results/log lines
+    // show up promptly instead of waiting for the next unrelated repaint
+    // — same pattern as `part_lookup_ui::show`.
+    if state.in_progress {
+        ctx.request_repaint_after(std::time::Duration::from_millis(200));
     }
 
     let viewport_id = egui::ViewportId::from_hash_of("library_import_window");
@@ -306,23 +396,62 @@ pub fn show(state: &mut LibraryImportState, ctx: &egui::Context, dest: &CrossImp
                 });
             }
 
+            if state.progress_total > 0 {
+                ui.add_space(6.0);
+                if !state.current_item.is_empty() {
+                    ui.label(
+                        RichText::new(format!("Importing '{}'\u{2026}", state.current_item))
+                            .small()
+                            .weak(),
+                    );
+                }
+                let fraction = state.progress_done as f32 / state.progress_total as f32;
+                let resp = ui.add(egui::ProgressBar::new(fraction).fill(ACCENT));
+                // See `part_lookup_ui::show` — `ProgressBar::text` always
+                // left-aligns, so the done/total count is painted
+                // centered over the bar's own rect by hand instead.
+                ui.painter().text(
+                    resp.rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    format!("{}/{}", state.progress_done, state.progress_total),
+                    egui::FontId::proportional(13.0),
+                    Color32::WHITE,
+                );
+            }
+
             ui.add_space(6.0);
-            egui::Frame::group(ui.style())
-                .fill(Color32::from_rgb(0x0d, 0x0e, 0x11))
-                .inner_margin(egui::Margin::same(8.0))
+            // Collapsed by default — the progress bar above already
+            // covers "is it working and on what", so the line-by-line
+            // detail log only needs to be opened when something needs
+            // digging into.
+            egui::CollapsingHeader::new(format!("{}  Detail Log", icon::TERMINAL_WINDOW))
+                .id_salt("library_import_log_collapse")
+                .default_open(false)
                 .show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    egui::ScrollArea::vertical()
-                        .max_height(90.0)
-                        .stick_to_bottom(true)
+                    egui::Frame::group(ui.style())
+                        .fill(Color32::from_rgb(0x0d, 0x0e, 0x11))
+                        .inner_margin(egui::Margin::same(8.0))
                         .show(ui, |ui| {
-                            ui.add(
-                                egui::TextEdit::multiline(&mut state.log_lines.join("\n"))
-                                    .desired_width(f32::INFINITY)
-                                    .frame(false)
-                                    .font(egui::TextStyle::Monospace)
-                                    .interactive(false),
-                            );
+                            ui.set_width(ui.available_width());
+                            egui::ScrollArea::vertical()
+                                .max_height(160.0)
+                                .stick_to_bottom(true)
+                                .show(ui, |ui| {
+                                    // Deliberately interactive (not
+                                    // `.interactive(false)`): the content
+                                    // is rebuilt from `log_lines` every
+                                    // frame regardless of what's typed
+                                    // into it, so it can't actually be
+                                    // edited, but leaving it interactive
+                                    // is what lets drag-select and
+                                    // Ctrl+C copy the log text out.
+                                    ui.add(
+                                        egui::TextEdit::multiline(&mut state.log_lines.join("\n"))
+                                            .desired_width(f32::INFINITY)
+                                            .frame(false)
+                                            .font(egui::TextStyle::Monospace),
+                                    );
+                                });
                         });
                 });
 
@@ -332,11 +461,13 @@ pub fn show(state: &mut LibraryImportState, ctx: &egui::Context, dest: &CrossImp
                 // Browse/Reload row above for why forcing an
                 // under-sized `add_sized` on a button backfires instead
                 // of shrinking it.
+                let label = if state.in_progress {
+                    format!("{}  Importing\u{2026}", icon::SPINNER)
+                } else {
+                    format!("{}  Import Selected", icon::DOWNLOAD)
+                };
                 if ui
-                    .add(theme::accent_button(format!(
-                        "{}  Import Selected",
-                        icon::DOWNLOAD
-                    )))
+                    .add_enabled(!state.in_progress, theme::accent_button(label))
                     .clicked()
                 {
                     state.import_selected(dest);

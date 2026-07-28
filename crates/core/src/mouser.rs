@@ -78,6 +78,23 @@ pub fn lookup_part(creds: &MouserCredentials, mpn: &str) -> Result<MouserPart, M
     search_part(&creds.api_key, mpn)
 }
 
+/// Confirms `api_key` is accepted by Mouser, for the app's "API
+/// Settings" connection-test button — Mouser has no dedicated
+/// credential-check endpoint, so this runs a throwaway keyword search
+/// and only cares whether the key itself was rejected. `NotFound` still
+/// counts as success: it means Mouser authenticated the request and
+/// simply found no match for the probe keyword, which is exactly what a
+/// real, working key looks like for an arbitrary search term.
+pub fn test_credentials(api_key: &str) -> Result<(), MouserError> {
+    if api_key.trim().is_empty() {
+        return Err(MouserError::MissingApiKey);
+    }
+    match search_part(api_key, "test") {
+        Ok(_) | Err(MouserError::NotFound(_)) => Ok(()),
+        Err(other) => Err(other),
+    }
+}
+
 #[derive(Serialize)]
 struct SearchRequest<'a> {
     #[serde(rename = "SearchByKeywordRequest")]

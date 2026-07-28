@@ -57,6 +57,10 @@ use crate::theme::{self, ACCENT, DANGER, OK};
 
 enum LookupEvent {
     Log(String),
+    /// Fires once a row starts being processed (before the staleness
+    /// check, so it fires even for a row that ends up skipped) — drives
+    /// the "currently looking up…" label next to the progress bar.
+    CurrentItem(String),
     RowResult {
         index: usize,
         ok: bool,
@@ -116,6 +120,8 @@ pub struct PartLookupState {
     results: HashMap<usize, RowResult>,
     progress_done: usize,
     progress_total: usize,
+    /// The row currently being looked up — see `LookupEvent::CurrentItem`.
+    current_item: String,
     /// Bypasses the 24h "checked recently, skip it" gate — see
     /// `run_lookup_batch`. Opt-in (defaults off) since the whole point
     /// of the gate is to avoid hammering Mouser/DigiKey on every run.
@@ -138,6 +144,7 @@ impl PartLookupState {
         self.results.clear();
         self.progress_done = 0;
         self.progress_total = 0;
+        self.current_item.clear();
         self.loaded_from = Some(project_dir.to_path_buf());
         self.log(format!(
             "Found {} symbol(s) placed on the schematic.",
@@ -174,6 +181,7 @@ impl PartLookupState {
             while let Ok(event) = rx.try_recv() {
                 match event {
                     LookupEvent::Log(msg) => lines.push(msg),
+                    LookupEvent::CurrentItem(item) => self.current_item = item,
                     LookupEvent::RowResult {
                         index,
                         ok,
@@ -204,6 +212,7 @@ impl PartLookupState {
         }
         if done {
             self.in_progress = false;
+            self.current_item.clear();
             self.rx = None;
         }
     }
@@ -260,6 +269,7 @@ impl PartLookupState {
 
         self.progress_done = 0;
         self.progress_total = selected.len();
+        self.current_item.clear();
 
         let (tx, rx) = mpsc::channel();
         self.rx = Some(rx);
@@ -312,6 +322,9 @@ fn run_lookup_batch(
                 summary,
             });
         };
+    let send_current = |reference: String| {
+        let _ = tx.send(LookupEvent::CurrentItem(reference));
+    };
 
     // One shared timestamp for the whole batch — a run takes seconds to
     // low minutes, so there's no meaningful staleness difference between
@@ -352,6 +365,7 @@ fn run_lookup_batch(
         };
 
         for row in &rows {
+            send_current(row.reference.clone());
             let Some(mut node) = sch.get_symbol_node(&row.uuid) else {
                 send_log(format!(
                     "\u{2718} '{}': no longer on the schematic, skipped.",
@@ -660,6 +674,13 @@ pub fn show(
 
             if state.progress_total > 0 {
                 ui.add_space(6.0);
+                if !state.current_item.is_empty() {
+                    ui.label(
+                        RichText::new(format!("Looking up '{}'\u{2026}", state.current_item))
+                            .small()
+                            .weak(),
+                    );
+                }
                 let fraction = state.progress_done as f32 / state.progress_total as f32;
                 let resp = ui.add(egui::ProgressBar::new(fraction).fill(ACCENT));
                 // `ProgressBar::text` (egui 0.29) always left-aligns its
@@ -677,22 +698,33 @@ pub fn show(
             }
 
             ui.add_space(6.0);
-            egui::Frame::group(ui.style())
-                .fill(Color32::from_rgb(0x0d, 0x0e, 0x11))
-                .inner_margin(egui::Margin::same(8.0))
+            // Collapsed by default — see `library_import_ui::show`'s
+            // identical treatment of its own detail log.
+            egui::CollapsingHeader::new(format!("{}  Detail Log", icon::TERMINAL_WINDOW))
+                .id_salt("part_lookup_log_collapse")
+                .default_open(false)
                 .show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    egui::ScrollArea::vertical()
-                        .max_height(120.0)
-                        .stick_to_bottom(true)
+                    egui::Frame::group(ui.style())
+                        .fill(Color32::from_rgb(0x0d, 0x0e, 0x11))
+                        .inner_margin(egui::Margin::same(8.0))
                         .show(ui, |ui| {
-                            ui.add(
-                                egui::TextEdit::multiline(&mut state.log_lines.join("\n"))
-                                    .desired_width(f32::INFINITY)
-                                    .frame(false)
-                                    .font(egui::TextStyle::Monospace)
-                                    .interactive(false),
-                            );
+                            ui.set_width(ui.available_width());
+                            egui::ScrollArea::vertical()
+                                .max_height(160.0)
+                                .stick_to_bottom(true)
+                                .show(ui, |ui| {
+                                    // Deliberately interactive — see
+                                    // `library_import_ui::show`'s
+                                    // identical log widget for why this
+                                    // is selectable/copyable without
+                                    // actually being editable.
+                                    ui.add(
+                                        egui::TextEdit::multiline(&mut state.log_lines.join("\n"))
+                                            .desired_width(f32::INFINITY)
+                                            .frame(false)
+                                            .font(egui::TextStyle::Monospace),
+                                    );
+                                });
                         });
                 });
 

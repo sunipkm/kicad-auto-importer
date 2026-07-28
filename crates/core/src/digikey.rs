@@ -89,6 +89,18 @@ pub fn lookup_part(creds: &DigikeyCredentials, mpn: &str) -> Result<DigikeyPart,
     search_part(&creds.client_id, &token, mpn)
 }
 
+/// Confirms `creds` are accepted by DigiKey's OAuth token endpoint, for
+/// the app's "API Settings" connection-test button. Cheaper than a full
+/// part search — the token exchange itself is the actual credential
+/// check, so there's no need to hit the search API at all — and it warms
+/// the same process-lifetime token cache `lookup_part` uses.
+pub fn test_credentials(creds: &DigikeyCredentials) -> Result<(), DigikeyError> {
+    if creds.client_id.trim().is_empty() || creds.client_secret.trim().is_empty() {
+        return Err(DigikeyError::MissingCredentials);
+    }
+    get_token(creds).map(|_| ())
+}
+
 // ── Token fetch + cache ──────────────────────────────────────────────
 
 struct CachedToken {
