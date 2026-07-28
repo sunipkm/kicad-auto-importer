@@ -138,8 +138,7 @@ standard on most desktop distributions; e.g. on Debian/Ubuntu:
 
 ### Install with cargo
 
-Not published on crates.io, but installable straight from the
-repository with a Rust toolchain already set up. On Linux, the tray
+It is installable with a Rust toolchain already set up. On Linux, the tray
 icon's build dependencies must be installed first:
 `sudo apt install libgtk-3-dev libayatana-appindicator3-dev` (Debian/Ubuntu;
 `gtk3 libappindicator-gtk3` or `libayatana-appindicator` on Arch/Manjaro).
