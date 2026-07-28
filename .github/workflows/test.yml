@@ -232,19 +232,30 @@ jobs:
           foreach ($target in ("${{ join(matrix.targets, ' ') }}" -split ' ')) {
             $releaseDir = "$env:GITHUB_WORKSPACE\target\$target\release"
 
+            # kicad-auto-importer.exe is built with `windows_subsystem =
+            # "windows"` in release mode (crates/app/src/main.rs) — a GUI-
+            # subsystem binary, not a console app. $LASTEXITCODE is
+            # documented as unreliable (frequently $null) for GUI-
+            # subsystem executables launched via `&`, so don't trust it
+            # here; verify success the way that actually matters instead —
+            # by checking the file it's supposed to have produced.
             & "$releaseDir\kicad-auto-importer.exe" --emit-ico "$releaseDir\app.ico"
-            if ($LASTEXITCODE -ne 0) { throw "--emit-ico failed with exit code $LASTEXITCODE" }
 
             # Fail fast with a clear message here rather than NSIS's more
-            # opaque "no files found" if the exe isn't where expected —
-            # e.g. Windows Defender quarantining a freshly-built,
-            # unsigned .exe is a known failure mode on these runners (see
-            # the "Exclude target/ from Windows Defender scanning" step
-            # above).
+            # opaque "no files found" if the exe/icon aren't where
+            # expected — e.g. Windows Defender quarantining a freshly-
+            # built, unsigned .exe is a known failure mode on these
+            # runners (see the "Exclude target/ from Windows Defender
+            # scanning" step above).
             Get-ChildItem $releaseDir
             $exePath = "$releaseDir\kicad-auto-importer.exe"
+            $icoPath = "$releaseDir\app.ico"
             if (-not (Test-Path $exePath)) {
               Write-Output "::error::kicad-auto-importer.exe missing from $releaseDir right before packaging"
+              exit 1
+            }
+            if (-not (Test-Path $icoPath)) {
+              Write-Output "::error::app.ico missing from $releaseDir after --emit-ico"
               exit 1
             }
 
@@ -253,7 +264,7 @@ jobs:
 
             makensis `
               "-DEXE_PATH=$exePath" `
-              "-DICO_PATH=$releaseDir\app.ico" `
+              "-DICO_PATH=$icoPath" `
               "-DPRODUCT_VERSION=$version" `
               "-DFILE_VERSION=$versionNumeric" `
               "-DOUT_FILE=$outFilePath" `
