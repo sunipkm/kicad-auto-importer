@@ -165,7 +165,8 @@ struct TokenResponse {
 }
 
 fn fetch_token(creds: &DigikeyCredentials) -> Result<(String, u64), DigikeyError> {
-    let response = ureq::post(TOKEN_URL)
+    let response = crate::http_agent::agent()
+        .post(TOKEN_URL)
         .send_form([
             ("client_id", creds.client_id.as_str()),
             ("client_secret", creds.client_secret.as_str()),
@@ -267,14 +268,43 @@ fn search_part(client_id: &str, token: &str, mpn: &str) -> Result<DigikeyPart, D
     parse_search_response(&text, mpn)
 }
 
+/// Every product DigiKey's keyword search returned for `mpn`, up to
+/// `max_results` — the multi-result sibling of [`search_part`]/
+/// [`lookup_part`], for callers (`parts_lookup::lookup_part_candidates`)
+/// that need to show a user every plausible match rather than silently
+/// committing to whichever one DigiKey's own relevance ranking put
+/// first.
+pub fn search_parts(
+    creds: &DigikeyCredentials,
+    mpn: &str,
+    max_results: u32,
+) -> Result<Vec<DigikeyPart>, DigikeyError> {
+    if creds.client_id.trim().is_empty() || creds.client_secret.trim().is_empty() {
+        return Err(DigikeyError::MissingCredentials);
+    }
+    let token = get_token(creds)?;
+    let text = raw_search_with_limit(&creds.client_id, &token, mpn, max_results)?;
+    parse_search_response_multi(&text, mpn)
+}
+
 fn raw_search(client_id: &str, token: &str, mpn: &str) -> Result<String, DigikeyError> {
+    raw_search_with_limit(client_id, token, mpn, 1)
+}
+
+fn raw_search_with_limit(
+    client_id: &str,
+    token: &str,
+    mpn: &str,
+    limit: u32,
+) -> Result<String, DigikeyError> {
     let request = SearchRequest {
         keywords: mpn,
-        limit: 1,
+        limit,
     };
     let body = serde_json::to_string(&request).expect("request body always serializes");
 
-    let response = ureq::post(SEARCH_URL)
+    let response = crate::http_agent::agent()
+        .post(SEARCH_URL)
         .header("X-DIGIKEY-Client-Id", client_id)
         .header("Authorization", format!("Bearer {token}"))
         .header("Content-Type", "application/json")
@@ -299,15 +329,25 @@ pub fn fetch_raw(creds: &DigikeyCredentials, mpn: &str) -> Result<String, Digike
 }
 
 fn parse_search_response(text: &str, mpn: &str) -> Result<DigikeyPart, DigikeyError> {
+    Ok(parse_search_response_multi(text, mpn)?.remove(0))
+}
+
+fn parse_search_response_multi(text: &str, mpn: &str) -> Result<Vec<DigikeyPart>, DigikeyError> {
     let parsed: SearchResponse =
         serde_json::from_str(text).map_err(|e| DigikeyError::MalformedResponse(e.to_string()))?;
 
-    let product = parsed
+    if parsed.products.is_empty() {
+        return Err(DigikeyError::NotFound(mpn.to_string()));
+    }
+
+    Ok(parsed
         .products
         .into_iter()
-        .next()
-        .ok_or_else(|| DigikeyError::NotFound(mpn.to_string()))?;
+        .map(|product| raw_product_to_digikey_part(product, mpn))
+        .collect())
+}
 
+fn raw_product_to_digikey_part(product: RawProduct, mpn: &str) -> DigikeyPart {
     let variation = product
         .product_variations
         .into_iter()
@@ -341,7 +381,7 @@ fn parse_search_response(text: &str, mpn: &str) -> Result<DigikeyPart, DigikeyEr
         .map(|d| richer_description(&d.detailed_description, &d.product_description).to_string())
         .unwrap_or_default();
 
-    Ok(DigikeyPart {
+    DigikeyPart {
         manufacturer: product.manufacturer.map(|m| m.name).unwrap_or_default(),
         mpn: if product.manufacturer_product_number.is_empty() {
             mpn.to_string()
@@ -358,7 +398,7 @@ fn parse_search_response(text: &str, mpn: &str) -> Result<DigikeyPart, DigikeyEr
         lifecycle_summary,
         lifecycle_concern,
         price_breaks: breaks,
-    })
+    }
 }
 
 #[cfg(test)]
@@ -418,6 +458,49 @@ mod tests {
         let empty = r#"{"Products": [], "ProductsCount": 0}"#;
         let err = parse_search_response(empty, "NOSUCHPART").unwrap_err();
         assert!(matches!(err, DigikeyError::NotFound(mpn) if mpn == "NOSUCHPART"));
+    }
+
+    // ── multi-result (search_parts) ────────────────────────────────────
+
+    const MULTI_FIXTURE: &str = r#"{
+        "Products": [
+            {
+                "ManufacturerProductNumber": "LM358P",
+                "Manufacturer": { "Name": "Texas Instruments" },
+                "ProductUrl": "https://www.digikey.com/lm358p",
+                "ProductVariations": [{
+                    "DigiKeyProductNumber": "296-1395-5-ND",
+                    "StandardPricing": [{ "BreakQuantity": 1, "UnitPrice": 0.60 }]
+                }],
+                "QuantityAvailable": 2500
+            },
+            {
+                "ManufacturerProductNumber": "LM358PWR",
+                "Manufacturer": { "Name": "Texas Instruments" },
+                "ProductUrl": "https://www.digikey.com/lm358pwr",
+                "ProductVariations": [{
+                    "DigiKeyProductNumber": "296-9999-1-ND",
+                    "StandardPricing": [{ "BreakQuantity": 1, "UnitPrice": 0.45 }]
+                }],
+                "QuantityAvailable": 800
+            }
+        ],
+        "ProductsCount": 2
+    }"#;
+
+    #[test]
+    fn search_parts_returns_every_result_not_just_the_first() {
+        let parts = parse_search_response_multi(MULTI_FIXTURE, "LM358P").unwrap();
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0].mpn, "LM358P");
+        assert_eq!(parts[1].mpn, "LM358PWR");
+        assert_eq!(parts[1].sku, "296-9999-1-ND");
+    }
+
+    #[test]
+    fn parse_search_response_still_takes_only_the_first_of_multiple() {
+        let part = parse_search_response(MULTI_FIXTURE, "LM358P").unwrap();
+        assert_eq!(part.mpn, "LM358P");
     }
 
     #[test]

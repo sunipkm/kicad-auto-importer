@@ -133,7 +133,7 @@ pub fn margin_adjusted_quantity(needed: u32, is_passive: bool, extra_percent: u3
 
 /// The winning vendor/quantity for one [`PricedRow`] — see
 /// [`choose_cheapest_offer`].
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct ChosenOffer {
     pub seller: String,
     pub manufacturer: String,

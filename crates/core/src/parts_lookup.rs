@@ -15,6 +15,7 @@
 
 use crate::digikey::{self, DigikeyCredentials, DigikeyError, DigikeyPart};
 use crate::mouser::{self, MouserCredentials, MouserError, MouserPart};
+use crate::parts_cache::PartsCache;
 use crate::sexp::{Child, SexpNode};
 use crate::symbol_importer::{get_symbol_property, set_symbol_property};
 
@@ -24,7 +25,7 @@ use crate::symbol_importer::{get_symbol_property, set_symbol_property};
 /// field can hold.
 const MAX_PRICE_BREAKS: usize = 4;
 
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct PartsCredentials {
     pub mouser_api_key: String,
     pub digikey_client_id: String,
@@ -37,13 +38,13 @@ pub struct PartsCredentials {
 /// other, and a vendor that *didn't* answer isn't represented as an
 /// offer in the first place (see [`VendorOffer`]), so "no offer" already
 /// means "not confirmed in stock" without needing a third state here.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum StockStatus {
     InStock,
     OutOfStock,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct VendorOffer {
     /// Display label: "Mouser" or "DigiKey".
     pub seller: String,
@@ -90,7 +91,7 @@ pub struct VendorOffer {
     pub price_breaks: Vec<(f64, f64)>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct PartInfo {
     pub manufacturer: String,
     pub mpn: String,
@@ -177,30 +178,46 @@ pub enum PartsLookupError {
 /// The one function callers (the `part_lookup_ui` background thread)
 /// need: queries every vendor with credentials configured, merging the
 /// results — see [`combine_results`].
+///
+/// The two vendors' HTTP calls run concurrently on plain background
+/// threads (`std::thread::scope`, this codebase's established pattern
+/// for background HTTP work — see `crates/app/src/library_import_ui.rs`'s
+/// docs) rather than one after the other: with both configured, this
+/// call's latency used to be roughly Mouser's round trip *plus*
+/// DigiKey's; now it's whichever of the two is slower.
 pub fn lookup_part_info(creds: &PartsCredentials, mpn: &str) -> Result<PartInfo, PartsLookupError> {
-    let mouser_result = if creds.mouser_api_key.trim().is_empty() {
-        None
-    } else {
-        Some(mouser::lookup_part(
-            &MouserCredentials {
-                api_key: creds.mouser_api_key.clone(),
-            },
-            mpn,
-        ))
-    };
-    let digikey_result = if creds.digikey_client_id.trim().is_empty()
-        || creds.digikey_client_secret.trim().is_empty()
-    {
-        None
-    } else {
-        Some(digikey::lookup_part(
-            &DigikeyCredentials {
-                client_id: creds.digikey_client_id.clone(),
-                client_secret: creds.digikey_client_secret.clone(),
-            },
-            mpn,
-        ))
-    };
+    let want_mouser = !creds.mouser_api_key.trim().is_empty();
+    let want_digikey = !creds.digikey_client_id.trim().is_empty()
+        && !creds.digikey_client_secret.trim().is_empty();
+
+    let (mouser_result, digikey_result) = std::thread::scope(|scope| {
+        let mouser_handle = want_mouser.then(|| {
+            scope.spawn(|| {
+                mouser::lookup_part(
+                    &MouserCredentials {
+                        api_key: creds.mouser_api_key.clone(),
+                    },
+                    mpn,
+                )
+            })
+        });
+        let digikey_handle = want_digikey.then(|| {
+            scope.spawn(|| {
+                digikey::lookup_part(
+                    &DigikeyCredentials {
+                        client_id: creds.digikey_client_id.clone(),
+                        client_secret: creds.digikey_client_secret.clone(),
+                    },
+                    mpn,
+                )
+            })
+        });
+        (
+            mouser_handle.map(|h| h.join().expect("mouser lookup thread panicked")),
+            digikey_handle.map(|h| h.join().expect("digikey lookup thread panicked")),
+        )
+    });
+
     combine_results(mpn, mouser_result, digikey_result)
 }
 
@@ -234,25 +251,13 @@ fn combine_results(
         match result {
             Ok(part) => {
                 if manufacturer.is_empty() {
-                    manufacturer = part.manufacturer;
+                    manufacturer = part.manufacturer.clone();
                 }
                 if !part.mpn.is_empty() {
-                    resolved_mpn = part.mpn;
+                    resolved_mpn = part.mpn.clone();
                 }
                 description = richer_description(&description, &part.description).to_string();
-                offers.push(VendorOffer {
-                    seller: "Mouser".to_string(),
-                    url: part.url,
-                    sku: part.sku,
-                    price_summary: part.price_summary,
-                    stock_status: part.stock_status,
-                    stock_summary: part.stock_summary,
-                    stock_quantity: part.stock_quantity,
-                    lifecycle_summary: part.lifecycle_summary,
-                    lifecycle_concern: part.lifecycle_concern,
-                    suggested_replacement: part.suggested_replacement,
-                    price_breaks: part.price_breaks,
-                });
+                offers.push(mouser_part_to_offer(part));
             }
             Err(exc) => warnings.push(format!("Mouser: {exc}")),
         }
@@ -262,25 +267,13 @@ fn combine_results(
         match result {
             Ok(part) => {
                 if manufacturer.is_empty() {
-                    manufacturer = part.manufacturer;
+                    manufacturer = part.manufacturer.clone();
                 }
                 if !part.mpn.is_empty() {
-                    resolved_mpn = part.mpn;
+                    resolved_mpn = part.mpn.clone();
                 }
                 description = richer_description(&description, &part.description).to_string();
-                offers.push(VendorOffer {
-                    seller: "DigiKey".to_string(),
-                    url: part.url,
-                    sku: part.sku,
-                    price_summary: part.price_summary,
-                    stock_status: part.stock_status,
-                    stock_summary: part.stock_summary,
-                    stock_quantity: part.stock_quantity,
-                    lifecycle_summary: part.lifecycle_summary,
-                    lifecycle_concern: part.lifecycle_concern,
-                    suggested_replacement: String::new(),
-                    price_breaks: part.price_breaks,
-                });
+                offers.push(digikey_part_to_offer(part));
             }
             Err(exc) => warnings.push(format!("DigiKey: {exc}")),
         }
@@ -296,6 +289,217 @@ fn combine_results(
         description,
         offers,
         warnings,
+    })
+}
+
+fn mouser_part_to_offer(part: MouserPart) -> VendorOffer {
+    VendorOffer {
+        seller: "Mouser".to_string(),
+        url: part.url,
+        sku: part.sku,
+        price_summary: part.price_summary,
+        stock_status: part.stock_status,
+        stock_summary: part.stock_summary,
+        stock_quantity: part.stock_quantity,
+        lifecycle_summary: part.lifecycle_summary,
+        lifecycle_concern: part.lifecycle_concern,
+        suggested_replacement: part.suggested_replacement,
+        price_breaks: part.price_breaks,
+    }
+}
+
+fn digikey_part_to_offer(part: DigikeyPart) -> VendorOffer {
+    VendorOffer {
+        seller: "DigiKey".to_string(),
+        url: part.url,
+        sku: part.sku,
+        price_summary: part.price_summary,
+        stock_status: part.stock_status,
+        stock_summary: part.stock_summary,
+        stock_quantity: part.stock_quantity,
+        lifecycle_summary: part.lifecycle_summary,
+        lifecycle_concern: part.lifecycle_concern,
+        suggested_replacement: String::new(),
+        price_breaks: part.price_breaks,
+    }
+}
+
+/// One vendor's specific candidate match for a queried MPN — the raw
+/// material a "which of these is actually my part" picker chooses from.
+/// Distinct from [`VendorOffer`]: a candidate carries the vendor's own
+/// reported `manufacturer`/`mpn`/`description` for *this specific
+/// match* (different candidates from one keyword search can report
+/// different MPNs entirely — a broader or near-duplicate match), where
+/// `VendorOffer` is scoped to whichever single candidate a caller has
+/// already committed to.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct VendorCandidate {
+    pub manufacturer: String,
+    pub mpn: String,
+    pub description: String,
+    pub offer: VendorOffer,
+}
+
+fn mouser_part_to_candidate(part: MouserPart) -> VendorCandidate {
+    VendorCandidate {
+        manufacturer: part.manufacturer.clone(),
+        mpn: part.mpn.clone(),
+        description: part.description.clone(),
+        offer: mouser_part_to_offer(part),
+    }
+}
+
+fn digikey_part_to_candidate(part: DigikeyPart) -> VendorCandidate {
+    VendorCandidate {
+        manufacturer: part.manufacturer.clone(),
+        mpn: part.mpn.clone(),
+        description: part.description.clone(),
+        offer: digikey_part_to_offer(part),
+    }
+}
+
+/// Every plausible match for `mpn`, across every vendor with
+/// credentials configured — unlike [`lookup_part_info`] (which commits
+/// to one winner per vendor via [`combine_results`]), this surfaces the
+/// whole candidate list so a caller can show a user a picker, or apply
+/// its own selection policy. `warnings` carries one entry per
+/// *configured* vendor whose search itself failed (still not fatal on
+/// its own, same as `PartInfo::warnings`).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct CandidateSet {
+    pub candidates: Vec<VendorCandidate>,
+    pub warnings: Vec<String>,
+}
+
+/// A handful of results per vendor is enough for a human to pick from
+/// without the request/response itself becoming unwieldy.
+const MAX_CANDIDATE_RESULTS: u32 = 10;
+
+/// Queries every configured vendor for every match of `mpn`, up to
+/// [`MAX_CANDIDATE_RESULTS`] each — see [`CandidateSet`]. Fails outright
+/// only if no vendor was configured ([`PartsLookupError::MissingCredentials`])
+/// or every attempted vendor's search itself failed
+/// ([`PartsLookupError::AllVendorsFailed`]).
+///
+/// Runs both vendors' searches concurrently — same reasoning as
+/// [`lookup_part_info`]'s identical `std::thread::scope` use, and
+/// doubly relevant here: this is what the frontend's vendor-result
+/// picker calls synchronously while a modal is open, so halving the
+/// wait directly shortens how long that modal spends on "Looking up
+/// candidates…".
+pub fn lookup_part_candidates(
+    creds: &PartsCredentials,
+    mpn: &str,
+) -> Result<CandidateSet, PartsLookupError> {
+    let want_mouser = !creds.mouser_api_key.trim().is_empty();
+    let want_digikey = !creds.digikey_client_id.trim().is_empty()
+        && !creds.digikey_client_secret.trim().is_empty();
+
+    let (mouser_result, digikey_result) = std::thread::scope(|scope| {
+        let mouser_handle = want_mouser.then(|| {
+            scope.spawn(|| mouser::search_parts(&creds.mouser_api_key, mpn, MAX_CANDIDATE_RESULTS))
+        });
+        let digikey_handle = want_digikey.then(|| {
+            scope.spawn(|| {
+                digikey::search_parts(
+                    &DigikeyCredentials {
+                        client_id: creds.digikey_client_id.clone(),
+                        client_secret: creds.digikey_client_secret.clone(),
+                    },
+                    mpn,
+                    MAX_CANDIDATE_RESULTS,
+                )
+            })
+        });
+        (
+            mouser_handle.map(|h| h.join().expect("mouser search thread panicked")),
+            digikey_handle.map(|h| h.join().expect("digikey search thread panicked")),
+        )
+    });
+
+    combine_candidate_results(mpn, mouser_result, digikey_result)
+}
+
+fn combine_candidate_results(
+    mpn: &str,
+    mouser: Option<Result<Vec<MouserPart>, MouserError>>,
+    digikey: Option<Result<Vec<DigikeyPart>, DigikeyError>>,
+) -> Result<CandidateSet, PartsLookupError> {
+    if mouser.is_none() && digikey.is_none() {
+        return Err(PartsLookupError::MissingCredentials);
+    }
+
+    let mut candidates = Vec::new();
+    let mut warnings = Vec::new();
+
+    if let Some(result) = mouser {
+        match result {
+            Ok(parts) => candidates.extend(parts.into_iter().map(mouser_part_to_candidate)),
+            Err(exc) => warnings.push(format!("Mouser: {exc}")),
+        }
+    }
+    if let Some(result) = digikey {
+        match result {
+            Ok(parts) => candidates.extend(parts.into_iter().map(digikey_part_to_candidate)),
+            Err(exc) => warnings.push(format!("DigiKey: {exc}")),
+        }
+    }
+
+    if candidates.is_empty() {
+        let msg = if warnings.is_empty() {
+            format!("no match found for '{mpn}'")
+        } else {
+            warnings.join("; ")
+        };
+        return Err(PartsLookupError::AllVendorsFailed(msg));
+    }
+
+    Ok(CandidateSet {
+        candidates,
+        warnings,
+    })
+}
+
+/// Merges a user's manually-picked candidates (at most one per vendor,
+/// from [`lookup_part_candidates`]'s result — the "vendor result
+/// picker" this exists for) into one [`PartInfo`], ready for
+/// [`apply_part_info`] the same way a [`lookup_part_info`] result would
+/// be. Reuses the same "richer of the two descriptions wins" merge
+/// [`combine_results`] applies to a fresh two-vendor lookup, just
+/// starting from already-fetched candidates instead of a live query —
+/// picking is a *selection* over data already in hand, not a new
+/// lookup. Returns `None` for an empty `chosen` list (nothing to
+/// apply).
+pub fn build_part_info_from_candidates(
+    mpn: &str,
+    chosen: Vec<VendorCandidate>,
+) -> Option<PartInfo> {
+    if chosen.is_empty() {
+        return None;
+    }
+
+    let mut manufacturer = String::new();
+    let mut resolved_mpn = mpn.to_string();
+    let mut description = String::new();
+    let mut offers = Vec::with_capacity(chosen.len());
+
+    for candidate in chosen {
+        if manufacturer.is_empty() {
+            manufacturer = candidate.manufacturer.clone();
+        }
+        if !candidate.mpn.is_empty() {
+            resolved_mpn = candidate.mpn.clone();
+        }
+        description = richer_description(&description, &candidate.description).to_string();
+        offers.push(candidate.offer);
+    }
+
+    Some(PartInfo {
+        manufacturer,
+        mpn: resolved_mpn,
+        description,
+        offers,
+        warnings: Vec::new(),
     })
 }
 
@@ -367,8 +571,8 @@ pub fn apply_part_info(sym_node: &mut SexpNode, info: &PartInfo) {
 /// Reconstructs a [`PartInfo`] from whatever [`apply_part_info`] last
 /// wrote onto `sym_node` — the read side of the same cache, used to
 /// skip a fresh Mouser/DigiKey lookup when the instance's own
-/// `Last Checked` property (`crates/app/src/part_lookup_ui.rs`) is
-/// still within the recheck window. `None` if `sym_node` was never
+/// `Last Checked` property (`crate::populate_bom`) is still within the
+/// recheck window. `None` if `sym_node` was never
 /// looked up (no `Mfr #`), has no vendor offer at all, or every offer it
 /// does have carries no price-break data — the last case covers a
 /// `Last Checked` property written before the `<Vendor> Price Breaks
@@ -581,6 +785,201 @@ pub fn cheapest_purchase(breaks: &[(f64, f64)], needed: u32) -> Option<PurchaseO
         })
 }
 
+/// `"<vendor> — $<unit price>"` plus whether it needs a human's
+/// attention, for whatever `apply_part_info` last wrote onto a symbol —
+/// picks the same offer [`score_candidates`] would rank first at
+/// `needed_qty` (feasible-and-cheapest), so this reads as the "chosen
+/// vendor" a fresh lookup would also land on. Used to show a result
+/// without a network call: both when a project first loads (whatever
+/// the schematic already carries from a past run) and when a batch run
+/// skips a still-fresh part. `None` if no offer has price-break data to
+/// rank by (mirrors [`read_cached_part_info`]'s own "no usable cache"
+/// case).
+pub fn summarize_offers(offers: &[VendorOffer], needed_qty: u32) -> Option<(String, bool)> {
+    let mut priced: Vec<(&VendorOffer, PurchaseOption, bool)> = offers
+        .iter()
+        .filter_map(|offer| {
+            let option = cheapest_purchase(&offer.price_breaks, needed_qty)?;
+            let feasible = offer.stock_quantity >= u64::from(option.quantity);
+            Some((offer, option, feasible))
+        })
+        .collect();
+
+    priced.sort_by(|(_, a_opt, a_feasible), (_, b_opt, b_feasible)| {
+        (!a_feasible)
+            .cmp(&!b_feasible)
+            .then_with(|| a_opt.total_price.partial_cmp(&b_opt.total_price).unwrap())
+    });
+
+    let (offer, option, feasible) = priced.into_iter().next()?;
+    let needs_attention = !feasible || offer.lifecycle_concern;
+    Some((
+        format!("{} — ${:.2}", offer.seller, option.unit_price),
+        needs_attention,
+    ))
+}
+
+/// One [`VendorCandidate`] priced out for a specific needed quantity —
+/// what [`score_candidates`] ranks. `feasible` is the actual purchasing
+/// decision ("can this vendor's on-hand stock cover the purchase
+/// quantity") — `score` is a 0–100 *display* number derived from it,
+/// not the other way around: [`score_candidates`]' sort order is always
+/// authoritative, `score` just needs to agree with that order for a
+/// human skimming a ranked list, not the reverse.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct ScoredCandidate {
+    pub candidate: VendorCandidate,
+    pub purchase_qty: u32,
+    pub unit_price: f64,
+    pub total_price: f64,
+    /// Whether this offer's own on-hand stock covers `purchase_qty`.
+    pub feasible: bool,
+    pub score: f64,
+}
+
+/// Ranks every candidate that can be priced at all (has price-break
+/// data for `needed_qty`) best-first, for automatic vendor+part
+/// selection — this *is* the "choose the correct vendor and part"
+/// decision, made once across every raw candidate from every vendor
+/// rather than as two separate steps (pick a vendor, then pick a
+/// price).
+///
+/// Ranking is exactly two factors, in this priority order:
+/// 1. **Feasibility** — a candidate whose on-hand stock covers
+///    `needed_qty` always outranks one that can't, regardless of price.
+///    A cheaper offer that can't actually fill the order isn't
+///    cheaper — it's a different, worse purchase (backorder, split
+///    order, or no order at all).
+/// 2. **Total cost** — among candidates tied on feasibility, cheapest
+///    wins.
+///
+/// This is intentionally *not* a single blended score used for sorting
+/// — a weighted-average approach can let a large-enough price gap
+/// outvote a hard "can't fulfill it" fact, which is exactly the
+/// mistake `bom_pricing::choose_cheapest_offer` was written to avoid
+/// for a single vendor's own price breaks; this generalizes that same
+/// rule across every raw candidate from every vendor at once. `score`
+/// is computed *after* sorting, purely so a UI can show a number next
+/// to each ranked choice — it has no influence on the order itself.
+///
+/// Candidates with no usable price-break data for `needed_qty` (e.g. a
+/// vendor listed the part with no pricing at all) are dropped, not
+/// scored at zero — there's nothing to rank them against.
+pub fn score_candidates(candidates: &[VendorCandidate], needed_qty: u32) -> Vec<ScoredCandidate> {
+    let mut priced: Vec<(VendorCandidate, PurchaseOption, bool)> = candidates
+        .iter()
+        .filter_map(|c| {
+            let option = cheapest_purchase(&c.offer.price_breaks, needed_qty)?;
+            let feasible = c.offer.stock_quantity >= u64::from(option.quantity);
+            Some((c.clone(), option, feasible))
+        })
+        .collect();
+
+    priced.sort_by(|(_, a_opt, a_feasible), (_, b_opt, b_feasible)| {
+        // `false` (feasible) sorts before `true` (infeasible) — exactly
+        // the priority order described above.
+        (!a_feasible)
+            .cmp(&!b_feasible)
+            .then_with(|| a_opt.total_price.partial_cmp(&b_opt.total_price).unwrap())
+    });
+
+    // Cheapest among the feasible options if any exist, else cheapest
+    // overall — the reference point `score` is normalized against
+    // below, matching whichever candidate `priced[0]` actually is.
+    let best_price = priced
+        .first()
+        .map(|(_, opt, _)| opt.total_price)
+        .unwrap_or(0.0);
+
+    priced
+        .into_iter()
+        .map(|(candidate, option, feasible)| {
+            let price_ratio = if option.total_price > 0.0 {
+                (best_price / option.total_price).min(1.0)
+            } else {
+                1.0
+            };
+            let mut score = price_ratio * 100.0;
+            if !feasible {
+                score *= 0.5;
+            }
+            if candidate.offer.lifecycle_concern {
+                score *= 0.85;
+            }
+            ScoredCandidate {
+                candidate,
+                purchase_qty: option.quantity,
+                unit_price: option.unit_price,
+                total_price: option.total_price,
+                feasible,
+                score: (score * 10.0).round() / 10.0,
+            }
+        })
+        .collect()
+}
+
+/// The single, automatic "choose the correct vendor and part" call
+/// both `populate_bom::run_lookup_batch` and `generate_bom::run_bom_batch`
+/// use in place of the old "just take the first API result"
+/// `lookup_part_info`: reuses `cache`'s entry for `search_string` if
+/// it's fresher than `max_age` (no network call at all), otherwise
+/// calls [`lookup_part_candidates`] live and records the result in
+/// `cache` for next time — then [`score_candidates`] against
+/// `needed_qty` and commits to whichever single candidate ranks best.
+///
+/// `force_refresh` bypasses the cache read (but a fresh live result is
+/// still written back to it) — the caller's own "Force re-check"
+/// option, same meaning as `populate_bom`/`generate_bom`'s existing
+/// per-instance 24h gate.
+///
+/// Falls back to the first raw candidate (whichever vendor happened to
+/// list it first) only if *none* of them carry enough price-break data
+/// to be scored at all — still surfaces the match (manufacturer, stock,
+/// lifecycle) rather than treating "found it, but no pricing" the same
+/// as "found nothing".
+#[allow(clippy::too_many_arguments)]
+pub fn lookup_best_match(
+    cache: &mut PartsCache,
+    creds: &PartsCredentials,
+    search_string: &str,
+    needed_qty: u32,
+    force_refresh: bool,
+    now: chrono::DateTime<chrono::Utc>,
+    max_age: chrono::Duration,
+) -> Result<PartInfo, PartsLookupError> {
+    let cached = if force_refresh {
+        None
+    } else {
+        cache.get_fresh(search_string, now, max_age).cloned()
+    };
+
+    let candidate_set = match cached {
+        Some(set) => set,
+        None => {
+            let fetched = lookup_part_candidates(creds, search_string)?;
+            cache.put(search_string, now, fetched.clone());
+            fetched
+        }
+    };
+
+    let winner = score_candidates(&candidate_set.candidates, needed_qty)
+        .into_iter()
+        .next()
+        .map(|scored| scored.candidate)
+        .or_else(|| candidate_set.candidates.first().cloned());
+
+    let Some(winner) = winner else {
+        return Err(PartsLookupError::AllVendorsFailed(format!(
+            "no match found for '{search_string}'"
+        )));
+    };
+
+    let mut info = build_part_info_from_candidates(search_string, vec![winner])
+        .expect("a single non-empty candidate always produces a PartInfo");
+    info.warnings = candidate_set.warnings;
+    Ok(info)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -673,6 +1072,96 @@ mod tests {
         let err =
             combine_results("LM358P", Some(Err(MouserError::MissingApiKey)), None).unwrap_err();
         assert!(matches!(err, PartsLookupError::AllVendorsFailed(_)));
+    }
+
+    // ── combine_candidate_results / lookup_part_candidates ────────────
+
+    #[test]
+    fn candidates_neither_vendor_configured_is_missing_credentials() {
+        let err = combine_candidate_results("LM358P", None, None).unwrap_err();
+        assert!(matches!(err, PartsLookupError::MissingCredentials));
+    }
+
+    #[test]
+    fn candidates_both_vendors_failing_is_all_vendors_failed() {
+        let err = combine_candidate_results(
+            "LM358P",
+            Some(Err(MouserError::NotFound("LM358P".to_string()))),
+            Some(Err(DigikeyError::NotFound("LM358P".to_string()))),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, PartsLookupError::AllVendorsFailed(msg) if msg.contains("Mouser") && msg.contains("DigiKey"))
+        );
+    }
+
+    #[test]
+    fn candidates_flattens_every_result_from_both_vendors() {
+        let mut second_mouser = mouser_part("b");
+        second_mouser.mpn = "LM358PWR".to_string();
+        let set = combine_candidate_results(
+            "LM358P",
+            Some(Ok(vec![mouser_part("a"), second_mouser])),
+            Some(Ok(vec![digikey_part()])),
+        )
+        .unwrap();
+        assert_eq!(set.candidates.len(), 3);
+        assert_eq!(
+            set.candidates
+                .iter()
+                .filter(|c| c.offer.seller == "Mouser")
+                .count(),
+            2
+        );
+        assert_eq!(
+            set.candidates
+                .iter()
+                .filter(|c| c.offer.seller == "DigiKey")
+                .count(),
+            1
+        );
+        assert!(set.warnings.is_empty());
+    }
+
+    #[test]
+    fn candidates_one_vendor_failing_still_returns_the_others_candidates() {
+        let set = combine_candidate_results(
+            "LM358P",
+            Some(Ok(vec![mouser_part("a")])),
+            Some(Err(DigikeyError::NotFound("LM358P".to_string()))),
+        )
+        .unwrap();
+        assert_eq!(set.candidates.len(), 1);
+        assert_eq!(set.warnings.len(), 1);
+        assert!(set.warnings[0].contains("DigiKey"));
+    }
+
+    #[test]
+    fn build_part_info_from_candidates_is_none_for_an_empty_choice() {
+        assert!(build_part_info_from_candidates("LM358P", Vec::new()).is_none());
+    }
+
+    #[test]
+    fn build_part_info_from_candidates_merges_one_candidate_per_vendor() {
+        let chosen = vec![
+            mouser_part_to_candidate(mouser_part("a")),
+            digikey_part_to_candidate(digikey_part()),
+        ];
+        let info = build_part_info_from_candidates("LM358P", chosen).unwrap();
+        assert_eq!(info.offers.len(), 2);
+        assert_eq!(info.manufacturer, "Texas Instruments");
+        assert_eq!(info.mpn, "LM358P");
+        // The DigiKey fixture's description is the richer one — same
+        // `richer_description` merge `combine_results` uses.
+        assert!(info.description.contains("Standard (General Purpose)"));
+    }
+
+    #[test]
+    fn build_part_info_from_candidates_keeps_a_single_vendor_choice() {
+        let chosen = vec![mouser_part_to_candidate(mouser_part("a"))];
+        let info = build_part_info_from_candidates("LM358P", chosen).unwrap();
+        assert_eq!(info.offers.len(), 1);
+        assert_eq!(info.offers[0].seller, "Mouser");
     }
 
     #[test]
@@ -1044,5 +1533,133 @@ mod tests {
     #[test]
     fn zero_needed_is_none() {
         assert!(cheapest_purchase(&[(1.0, 0.10)], 0).is_none());
+    }
+
+    // ── score_candidates ─────────────────────────────────────────────
+
+    #[test]
+    fn feasible_candidate_beats_a_cheaper_infeasible_one() {
+        let mut cheap_but_out_of_stock = mouser_part_to_candidate(mouser_part("a"));
+        cheap_but_out_of_stock.offer.price_breaks = vec![(1.0, 0.006)];
+        cheap_but_out_of_stock.offer.stock_quantity = 200;
+
+        let mut pricier_but_in_stock = digikey_part_to_candidate(digikey_part());
+        pricier_but_in_stock.offer.price_breaks = vec![(1.0, 0.009)];
+        pricier_but_in_stock.offer.stock_quantity = 50_000;
+
+        let ranked = score_candidates(
+            &[cheap_but_out_of_stock.clone(), pricier_but_in_stock.clone()],
+            1000,
+        );
+
+        assert_eq!(ranked[0].candidate.offer.seller, "DigiKey");
+        assert!(ranked[0].feasible);
+        assert!(!ranked[1].feasible);
+        assert!(ranked[0].score > ranked[1].score);
+    }
+
+    #[test]
+    fn cheapest_wins_among_candidates_tied_on_feasibility() {
+        let mut pricier = mouser_part_to_candidate(mouser_part("a"));
+        pricier.offer.price_breaks = vec![(1.0, 0.009)];
+        pricier.offer.stock_quantity = 50_000;
+
+        let mut cheaper = digikey_part_to_candidate(digikey_part());
+        cheaper.offer.price_breaks = vec![(1.0, 0.006)];
+        cheaper.offer.stock_quantity = 50_000;
+
+        let ranked = score_candidates(&[pricier, cheaper], 1000);
+
+        assert_eq!(ranked[0].candidate.offer.seller, "DigiKey");
+        assert!((ranked[0].total_price - 6.0).abs() < 1e-9);
+        assert_eq!(ranked[0].score, 100.0);
+    }
+
+    #[test]
+    fn when_nothing_is_feasible_still_ranks_by_price() {
+        let mut a = mouser_part_to_candidate(mouser_part("a"));
+        a.offer.price_breaks = vec![(1.0, 0.009)];
+        a.offer.stock_quantity = 10;
+
+        let mut b = digikey_part_to_candidate(digikey_part());
+        b.offer.price_breaks = vec![(1.0, 0.006)];
+        b.offer.stock_quantity = 10;
+
+        let ranked = score_candidates(&[a, b], 1000);
+
+        assert!(!ranked[0].feasible);
+        assert_eq!(ranked[0].candidate.offer.seller, "DigiKey");
+    }
+
+    #[test]
+    fn candidates_with_no_price_breaks_are_dropped_not_scored() {
+        let mut no_price = mouser_part_to_candidate(mouser_part("a"));
+        no_price.offer.price_breaks = Vec::new();
+
+        let ranked = score_candidates(&[no_price], 10);
+        assert!(ranked.is_empty());
+    }
+
+    #[test]
+    fn score_candidates_of_an_empty_list_is_empty() {
+        assert!(score_candidates(&[], 10).is_empty());
+    }
+
+    // ── summarize_offers ──────────────────────────────────────────────
+
+    fn offer(seller: &str, unit_price: f64, stock_quantity: u64) -> VendorOffer {
+        VendorOffer {
+            seller: seller.to_string(),
+            url: String::new(),
+            sku: "SKU".to_string(),
+            price_summary: format!("1:${unit_price:.2}"),
+            stock_status: if stock_quantity > 0 {
+                StockStatus::InStock
+            } else {
+                StockStatus::OutOfStock
+            },
+            stock_summary: format!("{stock_quantity} In Stock"),
+            stock_quantity,
+            lifecycle_summary: "Active".to_string(),
+            lifecycle_concern: false,
+            suggested_replacement: String::new(),
+            price_breaks: vec![(1.0, unit_price)],
+        }
+    }
+
+    #[test]
+    fn summarize_offers_picks_the_cheapest_feasible_offer() {
+        let offers = vec![offer("Mouser", 1.00, 100), offer("DigiKey", 0.80, 100)];
+        let (summary, needs_attention) = summarize_offers(&offers, 1).unwrap();
+        assert_eq!(summary, "DigiKey — $0.80");
+        assert!(!needs_attention);
+    }
+
+    #[test]
+    fn summarize_offers_flags_out_of_stock_as_needing_attention() {
+        let offers = vec![offer("Mouser", 0.50, 0)];
+        let (summary, needs_attention) = summarize_offers(&offers, 1).unwrap();
+        assert_eq!(summary, "Mouser — $0.50");
+        assert!(needs_attention);
+    }
+
+    #[test]
+    fn summarize_offers_flags_lifecycle_concern_as_needing_attention() {
+        let mut concerning = offer("Mouser", 0.50, 100);
+        concerning.lifecycle_concern = true;
+        let (_, needs_attention) = summarize_offers(&[concerning], 1).unwrap();
+        assert!(needs_attention);
+    }
+
+    #[test]
+    fn summarize_offers_is_none_without_price_breaks() {
+        let mut no_price = offer("Mouser", 0.50, 100);
+        no_price.price_breaks.clear();
+        assert!(summarize_offers(&[no_price], 1).is_none());
+    }
+
+    #[test]
+    fn summarize_offers_of_an_empty_list_is_none() {
+        assert!(summarize_offers(&[], 1).is_none());
     }
 }

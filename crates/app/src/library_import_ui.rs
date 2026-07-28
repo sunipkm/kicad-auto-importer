@@ -148,11 +148,10 @@ impl LibraryImportState {
         });
     }
 
-    /// Runs the actual import on a background thread — same rationale as
-    /// `part_lookup_ui::look_up_selected`: importing several symbols
-    /// (each with footprint + 3-D model copies) can take a visible
-    /// moment, and blocking the GUI thread for it would freeze the
-    /// window and make a progress bar pointless.
+    /// Runs the actual import on a background thread — importing several
+    /// symbols (each with footprint + 3-D model copies) can take a
+    /// visible moment, and blocking the GUI thread for it would freeze
+    /// the window and make a progress bar pointless.
     fn import_selected(&mut self, dest: &CrossImportSettings) {
         let Some(source_project_dir) = self.source_project_dir.clone() else {
             self.status = "Choose a source project first.".to_string();
@@ -273,8 +272,7 @@ pub fn show(state: &mut LibraryImportState, ctx: &egui::Context, dest: &CrossImp
 
     state.drain_channel();
     // Polled every frame while a batch is running so results/log lines
-    // show up promptly instead of waiting for the next unrelated repaint
-    // — same pattern as `part_lookup_ui::show`.
+    // show up promptly instead of waiting for the next unrelated repaint.
     if state.in_progress {
         ctx.request_repaint_after(std::time::Duration::from_millis(200));
     }
@@ -407,9 +405,9 @@ pub fn show(state: &mut LibraryImportState, ctx: &egui::Context, dest: &CrossImp
                 }
                 let fraction = state.progress_done as f32 / state.progress_total as f32;
                 let resp = ui.add(egui::ProgressBar::new(fraction).fill(ACCENT));
-                // See `part_lookup_ui::show` — `ProgressBar::text` always
-                // left-aligns, so the done/total count is painted
-                // centered over the bar's own rect by hand instead.
+                // `ProgressBar::text` (egui 0.29) always left-aligns, so
+                // the done/total count is painted centered over the
+                // bar's own rect by hand instead.
                 ui.painter().text(
                     resp.rect.center(),
                     egui::Align2::CENTER_CENTER,

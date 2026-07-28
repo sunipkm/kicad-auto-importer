@@ -20,17 +20,15 @@ use kicad_auto_importer_core::zip_importer::{
     import_folder, import_zip, validate_model_subdir, ImportSettings,
 };
 
-use crate::bom_ui::{self, BomState};
 use crate::library_import_ui::{self, LibraryImportState};
-use crate::part_lookup_ui::{self, PartLookupState};
 use crate::theme::{self, ACCENT, DANGER, OK, TITLE_BAR_BG};
 use crate::tray;
 use crate::window_chrome;
 
 /// One vendor's API-credential check, run on a background thread so a
 /// slow/hanging request from the "Test" button in `vendor_settings_button`
-/// can't freeze the whole window — same rationale as `part_lookup_ui`'s
-/// background lookups.
+/// can't freeze the whole window — same rationale as
+/// `library_import_ui`'s background imports.
 #[derive(Default)]
 struct CredentialTest {
     state: CredentialTestState,
@@ -91,8 +89,6 @@ pub struct MainApp {
     status: String,
 
     library_import: LibraryImportState,
-    part_lookup: PartLookupState,
-    bom: BomState,
 
     /// Mouser/DigiKey API credentials — global (not per-project), see
     /// `GlobalSettings`. Loaded once at startup, saved back whenever
@@ -158,8 +154,6 @@ impl MainApp {
             log_lines: Vec::new(),
             status: String::new(),
             library_import: LibraryImportState::default(),
-            part_lookup: PartLookupState::default(),
-            bom: BomState::default(),
             mouser_api_key: global_settings.mouser_api_key,
             digikey_client_id: global_settings.digikey_client_id,
             digikey_client_secret: global_settings.digikey_client_secret,
@@ -187,6 +181,29 @@ impl MainApp {
             None
         } else {
             Some(PathBuf::from(&self.project_path))
+        }
+    }
+
+    /// If `self.project_path` currently points at a `.kicad_pro` *file*
+    /// — typed or pasted directly, matching what the "KiCad Project
+    /// (.kicad_pro):" field's own label invites, rather than picked via
+    /// `browse_project`'s file dialog — collapses it down to that file's
+    /// parent directory in place, the same normalization `browse_project`
+    /// already applies to whatever it picks. `project_path` is documented
+    /// as always holding the project *directory* (every other read of it,
+    /// e.g. `to_absolute`'s `${KIPRJMOD}` expansion, `save_global_settings`'s
+    /// `last_project_path`, assumes exactly that) — without this, typing
+    /// the `.kicad_pro` path the label suggests silently breaks every
+    /// relative symbol/footprint library path and the "restore last
+    /// project on launch" check (`Path::is_dir()` on a file is `false`).
+    /// Called every frame right after the field's own widget, so it's a
+    /// no-op once already normalized (a directory has no `.kicad_pro`
+    /// extension to strip).
+    fn normalize_project_path(&mut self) {
+        if let Some(dir) = kicad_pro_parent_dir(&self.project_path) {
+            self.project_path = dir;
+            self.load_config_for_current_project();
+            self.save_global_settings();
         }
     }
 
@@ -278,32 +295,6 @@ impl MainApp {
         }
     }
 
-    /// Unlike `open_library_import`, doesn't run `build_settings` — that
-    /// also demands symbol/footprint library paths, which matter only to
-    /// the actual symbol/footprint *import* flow. Populate BOM just reads
-    /// the schematic and writes vendor properties back onto it, so a
-    /// project directory is all it actually needs.
-    fn open_part_lookup(&mut self) {
-        if self.project_dir().is_none() {
-            self.status = "Choose a KiCad project first.".to_string();
-            return;
-        }
-        self.save_config();
-        self.part_lookup.open = true;
-    }
-
-    /// Same reasoning as `open_part_lookup` just above — Generate BOM
-    /// only reads the schematic and queries vendors, it never touches
-    /// the symbol/footprint libraries.
-    fn open_generate_bom(&mut self) {
-        if self.project_dir().is_none() {
-            self.status = "Choose a KiCad project first.".to_string();
-            return;
-        }
-        self.save_config();
-        self.bom.open = true;
-    }
-
     /// A single button that pops out the Mouser/DigiKey credential
     /// fields on click, rather than the fields themselves sitting
     /// permanently in the main form — they're an occasional, one-time
@@ -335,9 +326,11 @@ impl MainApp {
                 ui.add_space(2.0);
                 ui.label(
                     RichText::new(
-                        "Used to look up manufacturer/distributor info for \
-                         symbols already in your library. Set either or both \
-                         vendors — a lookup uses whichever are configured.",
+                        "This app doesn't look up parts itself — that's the \
+                         companion KiCad BOM Tool (bom-app)'s job. Set either \
+                         or both vendors here and they're immediately \
+                         available there too, since both share this same \
+                         settings.json.",
                     )
                     .small()
                     .weak(),
@@ -671,25 +664,52 @@ impl MainApp {
     }
 
     fn browse_symbol_lib(&mut self) {
-        // Deliberately `pick_file`, not `save_file`: this dialog is for
-        // *selecting* the destination library, which the import pipeline
-        // opens with `SymbolLibrary::open_or_create` and only ever
-        // appends/patches into — never replaces wholesale. `save_file`
-        // would pop the OS's native "this file already exists, overwrite?"
-        // confirmation for the ordinary case of pointing at a library you
-        // already have, which is misleading (nothing gets overwritten) and
-        // scary for no reason. A not-yet-created library name can still be
-        // typed directly into the (editable) field next to this button.
-        if let Some(path) = rfd::FileDialog::new()
+        // `save_file`, not `pick_file`: this dialog is for *choosing* the
+        // destination library, which may not exist yet — the import
+        // pipeline opens whatever path comes back with
+        // `SymbolLibrary::open_or_create` and only ever appends/patches
+        // into it, never replaces wholesale. `pick_file` (an Open-style
+        // dialog) looks like the more honest choice, but native Open
+        // dialogs on every platform either refuse to return a path that
+        // doesn't exist yet or grey out the confirm button entirely —
+        // there'd be no way to browse to a brand-new library at all,
+        // only ever an existing one (a not-yet-created name could still
+        // be typed directly into the editable field next to this
+        // button, but not picked via Browse). `save_file` does show the
+        // OS's native "this file already exists — replace?" prompt when
+        // browsing to a library you already have, which is misleading
+        // (nothing gets overwritten), but that's the lesser of the two
+        // problems — the user just confirms it and nothing is lost.
+        if let Some(mut path) = rfd::FileDialog::new()
             .add_filter("KiCad symbol library", &["kicad_sym"])
-            .pick_file()
+            .save_file()
         {
+            // Not every platform's save dialog appends the filter's
+            // extension on its own for a freshly-typed name — same
+            // belt-and-suspenders `set_extension` `browse_footprint_lib`
+            // does for `.pretty` below.
+            if path.extension().is_none_or(|e| e != "kicad_sym") {
+                path.set_extension("kicad_sym");
+            }
             self.symbol_lib = self.to_display(&path);
         }
     }
 
     fn browse_footprint_lib(&mut self) {
-        if let Some(mut path) = rfd::FileDialog::new().pick_folder() {
+        // `save_file`, not `pick_folder` — same reasoning as
+        // `browse_symbol_lib` above, just for a directory instead of a
+        // single file: `rfd` has no "pick or create a folder" dialog
+        // mode, and `pick_folder`'s "Open"-style semantics can leave a
+        // not-yet-created `.pretty` library unreachable via Browse
+        // (most visibly on Linux, where the native folder chooser many
+        // desktop environments route this through — the
+        // `xdg-desktop-portal` file chooser — often has no "New Folder"
+        // affordance at all). The footprint import pipeline already
+        // creates the destination directory itself if it doesn't exist
+        // (`footprint_importer`'s `fs::create_dir_all`), so a `save_file`
+        // dialog's typed-but-nonexistent path is exactly as usable here
+        // as a real file path is for `browse_symbol_lib`.
+        if let Some(mut path) = rfd::FileDialog::new().save_file() {
             if path.extension().is_none_or(|e| e != "pretty") {
                 path.set_extension("pretty");
             }
@@ -699,6 +719,23 @@ impl MainApp {
 }
 
 /// Like `egui::popup::popup_below_widget`, but pins the popup's top-
+/// If `path` names a `.kicad_pro` file (case-insensitive extension),
+/// returns its parent directory as a string — `None` if `path` doesn't
+/// end in `.kicad_pro` (already a directory, or empty) or has no parent
+/// component. See `MainApp::normalize_project_path`'s own docs for why
+/// this matters.
+fn kicad_pro_parent_dir(path: &str) -> Option<String> {
+    let p = Path::new(path);
+    if !p
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("kicad_pro"))
+    {
+        return None;
+    }
+    p.parent()
+        .map(|parent| parent.to_string_lossy().to_string())
+}
+
 /// *right* corner under the widget's right edge instead of its left
 /// edge, so the popup grows leftward as it widens. Needed for
 /// `vendor_settings_button`: that button sits at the window's right
@@ -907,6 +944,7 @@ impl eframe::App for MainApp {
                         ) {
                             self.browse_project();
                         }
+                        self.normalize_project_path();
                         if path_row(ui, icon::EYE, "Watch folder:", &mut self.watch_folder, true) {
                             self.browse_watch_folder();
                         }
@@ -1005,18 +1043,6 @@ impl eframe::App for MainApp {
                                 .add_sized(
                                     action_size,
                                     theme::accent_button(format!(
-                                        "{}  Populate BOM",
-                                        icon::MAGNIFYING_GLASS
-                                    )),
-                                )
-                                .clicked()
-                            {
-                                self.open_part_lookup();
-                            }
-                            if ui
-                                .add_sized(
-                                    action_size,
-                                    egui::Button::new(format!(
                                         "{}  Import ZIP\u{2026}",
                                         icon::FILE_ZIP
                                     )),
@@ -1132,40 +1158,49 @@ impl eframe::App for MainApp {
             library_import_ui::show(&mut self.library_import, ctx, &dest_settings);
         }
 
-        if self.part_lookup.open {
-            let credentials = kicad_auto_importer_core::parts_lookup::PartsCredentials {
-                mouser_api_key: self.mouser_api_key.clone(),
-                digikey_client_id: self.digikey_client_id.clone(),
-                digikey_client_secret: self.digikey_client_secret.clone(),
-            };
-            let project_dir = self.project_dir().unwrap_or_default();
-            part_lookup_ui::show(&mut self.part_lookup, ctx, &project_dir, &credentials);
-            // "Generate BOM" lives as a button inside the Populate BOM
-            // window (see part_lookup_ui.rs) rather than as its own
-            // top-level main-window button, but the two are still
-            // separate windows/states — this window can't reach
-            // `self.bom` directly, so it just raises a flag for us to
-            // act on here.
-            if self.part_lookup.open_bom_requested {
-                self.part_lookup.open_bom_requested = false;
-                self.open_generate_bom();
-            }
-        }
-
-        if self.bom.open {
-            let credentials = kicad_auto_importer_core::parts_lookup::PartsCredentials {
-                mouser_api_key: self.mouser_api_key.clone(),
-                digikey_client_id: self.digikey_client_id.clone(),
-                digikey_client_secret: self.digikey_client_secret.clone(),
-            };
-            let project_dir = self.project_dir().unwrap_or_default();
-            bom_ui::show(&mut self.bom, ctx, &project_dir, &credentials);
-        }
-
         window_chrome::resize_grip(ctx, "main");
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.stop_watching();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn kicad_pro_parent_dir_strips_a_typed_project_file_path() {
+        assert_eq!(
+            kicad_pro_parent_dir("/home/user/MyProject/MyProject.kicad_pro"),
+            Some("/home/user/MyProject".to_string())
+        );
+    }
+
+    #[test]
+    fn kicad_pro_parent_dir_matches_the_extension_case_insensitively() {
+        assert_eq!(
+            kicad_pro_parent_dir("/home/user/MyProject/MyProject.KICAD_PRO"),
+            Some("/home/user/MyProject".to_string())
+        );
+    }
+
+    #[test]
+    fn kicad_pro_parent_dir_is_none_for_a_directory() {
+        assert_eq!(kicad_pro_parent_dir("/home/user/MyProject"), None);
+    }
+
+    #[test]
+    fn kicad_pro_parent_dir_is_none_for_empty_input() {
+        assert_eq!(kicad_pro_parent_dir(""), None);
+    }
+
+    #[test]
+    fn kicad_pro_parent_dir_is_none_for_an_unrelated_extension() {
+        assert_eq!(
+            kicad_pro_parent_dir("/home/user/MyProject/MyProject.kicad_sch"),
+            None
+        );
     }
 }

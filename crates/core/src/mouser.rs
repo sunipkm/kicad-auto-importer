@@ -245,16 +245,35 @@ fn search_part(api_key: &str, mpn: &str) -> Result<MouserPart, MouserError> {
     parse_search_response(&text, mpn)
 }
 
+/// Every part Mouser's keyword search returned for `mpn`, up to
+/// `max_results` — the multi-result sibling of [`search_part`]/
+/// [`lookup_part`], for callers (`parts_lookup::lookup_part_candidates`)
+/// that need to show a user every plausible match rather than silently
+/// committing to whichever one Mouser's own relevance ranking put
+/// first.
+pub fn search_parts(
+    api_key: &str,
+    mpn: &str,
+    max_results: u32,
+) -> Result<Vec<MouserPart>, MouserError> {
+    let text = fetch_raw_with_count(api_key, mpn, max_results)?;
+    parse_search_response_multi(&text, mpn)
+}
+
 /// Fetches the raw (unparsed) JSON Mouser returns for `mpn` — useful
 /// for checking `parse_search_response`'s field-name assumptions
 /// against a real account (see `examples/mouser_lookup.rs`); not used
 /// by [`lookup_part`] itself, which goes through [`search_part`]
 /// instead so parse errors surface at the normal call site too.
 pub fn fetch_raw(api_key: &str, mpn: &str) -> Result<String, MouserError> {
+    fetch_raw_with_count(api_key, mpn, 1)
+}
+
+fn fetch_raw_with_count(api_key: &str, mpn: &str, records: u32) -> Result<String, MouserError> {
     let request = SearchRequest {
         search_by_keyword_request: SearchByKeywordRequest {
             keyword: mpn,
-            records: 1,
+            records,
             starting_record: 0,
             search_options: "",
         },
@@ -262,7 +281,8 @@ pub fn fetch_raw(api_key: &str, mpn: &str) -> Result<String, MouserError> {
     let body = serde_json::to_string(&request).expect("request body always serializes");
 
     let url = format!("{BASE_URL}/search/keyword?apiKey={api_key}");
-    let response = ureq::post(&url)
+    let response = crate::http_agent::agent()
+        .post(&url)
         .header("Content-Type", "application/json")
         .send(body.as_str())
         .map_err(MouserError::from)?;
@@ -274,6 +294,10 @@ pub fn fetch_raw(api_key: &str, mpn: &str) -> Result<String, MouserError> {
 }
 
 fn parse_search_response(text: &str, mpn: &str) -> Result<MouserPart, MouserError> {
+    Ok(parse_search_response_multi(text, mpn)?.remove(0))
+}
+
+fn parse_search_response_multi(text: &str, mpn: &str) -> Result<Vec<MouserPart>, MouserError> {
     let parsed: SearchResponse =
         serde_json::from_str(text).map_err(|e| MouserError::MalformedResponse(e.to_string()))?;
 
@@ -281,11 +305,18 @@ fn parse_search_response(text: &str, mpn: &str) -> Result<MouserPart, MouserErro
         return Err(MouserError::MalformedResponse(err.message));
     }
 
-    let part = parsed
-        .search_results
-        .and_then(|r| r.parts.into_iter().next())
-        .ok_or_else(|| MouserError::NotFound(mpn.to_string()))?;
+    let parts = parsed.search_results.map(|r| r.parts).unwrap_or_default();
+    if parts.is_empty() {
+        return Err(MouserError::NotFound(mpn.to_string()));
+    }
 
+    Ok(parts
+        .into_iter()
+        .map(|part| raw_part_to_mouser_part(part, mpn))
+        .collect())
+}
+
+fn raw_part_to_mouser_part(part: RawPart, mpn: &str) -> MouserPart {
     let breaks: Vec<(f64, f64)> = part
         .price_breaks
         .iter()
@@ -302,7 +333,7 @@ fn parse_search_response(text: &str, mpn: &str) -> Result<MouserPart, MouserErro
         .to_string();
     let lifecycle_concern = is_lifecycle_concern(&lifecycle_summary);
 
-    Ok(MouserPart {
+    MouserPart {
         manufacturer: part.manufacturer,
         mpn: if part.manufacturer_part_number.is_empty() {
             mpn.to_string()
@@ -324,7 +355,7 @@ fn parse_search_response(text: &str, mpn: &str) -> Result<MouserPart, MouserErro
             .trim()
             .to_string(),
         price_breaks: breaks,
-    })
+    }
 }
 
 #[cfg(test)]
@@ -420,6 +451,52 @@ mod tests {
         let empty = r#"{"SearchResults": {"NumberOfResult": 0, "Parts": []}}"#;
         let err = parse_search_response(empty, "NOSUCHPART").unwrap_err();
         assert!(matches!(err, MouserError::NotFound(mpn) if mpn == "NOSUCHPART"));
+    }
+
+    // ── multi-result (search_parts) ────────────────────────────────────
+
+    const MULTI_FIXTURE: &str = r#"{
+        "SearchResults": {
+            "NumberOfResult": 2,
+            "Parts": [
+                {
+                    "MouserPartNumber": "595-LM358P",
+                    "ManufacturerPartNumber": "LM358P",
+                    "Manufacturer": "Texas Instruments",
+                    "Description": "Op Amps Dual Op Amp",
+                    "ProductDetailUrl": "https://www.mouser.com/lm358p",
+                    "PriceBreaks": [{ "Quantity": 1, "Price": "$0.5500" }],
+                    "Availability": "1,934 In Stock"
+                },
+                {
+                    "MouserPartNumber": "926-LM358PWR",
+                    "ManufacturerPartNumber": "LM358PWR",
+                    "Manufacturer": "Texas Instruments",
+                    "Description": "Op Amps Dual Op Amp SOIC",
+                    "ProductDetailUrl": "https://www.mouser.com/lm358pwr",
+                    "PriceBreaks": [{ "Quantity": 1, "Price": "$0.4000" }],
+                    "Availability": "500 In Stock"
+                }
+            ]
+        }
+    }"#;
+
+    #[test]
+    fn search_parts_returns_every_result_not_just_the_first() {
+        let parts = parse_search_response_multi(MULTI_FIXTURE, "LM358P").unwrap();
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0].mpn, "LM358P");
+        assert_eq!(parts[1].mpn, "LM358PWR");
+        assert_eq!(parts[1].sku, "926-LM358PWR");
+    }
+
+    #[test]
+    fn parse_search_response_still_takes_only_the_first_of_multiple() {
+        // The single-result path (`search_part`/`lookup_part`) is now
+        // just a policy over the same multi-result parser — it should
+        // keep returning exactly what it always did.
+        let part = parse_search_response(MULTI_FIXTURE, "LM358P").unwrap();
+        assert_eq!(part.mpn, "LM358P");
     }
 
     #[test]

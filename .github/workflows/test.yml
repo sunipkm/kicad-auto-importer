@@ -41,15 +41,38 @@ jobs:
           components: rustfmt, clippy
           targets: ${{ join(matrix.targets, ',') }}
       - uses: Swatinem/rust-cache@v2
-      # Linux-only build dependency of the `tray-icon` crate (system
-      # tray icon + menu, see crates/app/src/tray.rs): GTK3 to create
-      # the tray widget and libayatana-appindicator for the
-      # StatusNotifierItem/AppIndicator protocol most desktop
-      # environments actually render it through. macOS/Windows use
-      # their native tray APIs instead and need nothing extra here.
-      - name: Install tray icon build dependencies (linux)
+      # Linux-only build dependencies: GTK3 + libayatana-appindicator for
+      # the `tray-icon` crate (system tray icon + menu, see
+      # crates/app/src/tray.rs), plus everything Tauri needs to compile
+      # `bom-app` (see bom-app/README.md's own "Prerequisites" — this
+      # list must stay in sync with that one). macOS/Windows use their
+      # native tray/webview APIs instead and need nothing extra here.
+      - name: Install Linux build dependencies (tray icon + bom-app/Tauri)
         if: matrix.os == 'ubuntu-latest'
-        run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libayatana-appindicator3-dev
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libayatana-appindicator3-dev \
+            libwebkit2gtk-4.1-dev build-essential curl wget file \
+            libxdo-dev libssl-dev librsvg2-dev
+
+      # Every workspace member is compiled by the fmt/clippy/test steps
+      # below — including `bom-app`, whose `tauri::generate_context!()`
+      # embeds `frontendDist` (`bom-app/dist/`, see tauri.conf.json) at
+      # *compile* time and hard-errors if that directory doesn't exist
+      # yet. The frontend has to be built before any `cargo` command
+      # touches the workspace, not just before packaging a release.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: bom-app/package-lock.json
+      - name: Install bom-app frontend dependencies
+        working-directory: bom-app
+        run: npm ci
+      - name: Build bom-app frontend
+        working-directory: bom-app
+        run: npm run build
+
       - name: Format check
         run: cargo fmt --all -- --check
       - name: Clippy
@@ -78,9 +101,10 @@ jobs:
           set -euo pipefail
           for target in ${{ join(matrix.targets, ' ') }}; do
             cargo build --release --target "$target" -p kicad-auto-importer
+            cargo build --release --target "$target" -p bom-app
           done
 
-      - name: Package release archive (linux)
+      - name: Package release archives (linux)
         if: inputs.build_release && matrix.os == 'ubuntu-latest'
         shell: bash
         run: |
@@ -88,6 +112,14 @@ jobs:
           for target in ${{ join(matrix.targets, ' ') }}; do
             tar czf "kicad-auto-importer-$target.tar.gz" \
               -C "target/$target/release" kicad-auto-importer
+            # A bare binary, same as kicad-auto-importer above rather
+            # than a `.deb`/AppImage — bom-app self-registers its own
+            # `.desktop` entry and icons on first run instead
+            # (`bom-app/src-tauri/src/linux_desktop_integration.rs`),
+            # the same mechanism `crates/app` uses for exactly the same
+            # reason (see that module's own docs).
+            tar czf "bom-app-$target.tar.gz" \
+              -C "target/$target/release" bom-app
           done
 
       # macOS ships as a proper double-clickable `.app`, not a bare
@@ -143,6 +175,45 @@ jobs:
             codesign --force --deep --sign - "$app_dir"
           done
 
+      # bom-app's own `.app`, built by hand the same way as
+      # kicad-auto-importer's above (not via `tauri build`'s own macOS
+      # bundler) so both go through one well-understood, already-proven
+      # pipeline rather than two different ones — the only real
+      # difference is the icon: bom-app already ships a ready-made
+      # `icon.icns` (`bom-app/src-tauri/icons/`), so there's no
+      # `--emit-iconset` step to run first.
+      - name: Build bom-app .app bundle(s)
+        if: inputs.build_release && matrix.os == 'macos-latest'
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          for target in ${{ join(matrix.targets, ' ') }}; do
+            release_dir="target/$target/release"
+            app_dir="$release_dir/KiCad BOM Tool.app"
+            mkdir -p "$app_dir/Contents/MacOS" "$app_dir/Contents/Resources"
+            cp "$release_dir/bom-app" "$app_dir/Contents/MacOS/bom-app"
+            cp "bom-app/src-tauri/icons/icon.icns" "$app_dir/Contents/Resources/AppIcon.icns"
+
+            plist="$app_dir/Contents/Info.plist"
+            plutil -create xml1 "$plist"
+            plutil -insert CFBundleName -string "KiCad BOM Tool" "$plist"
+            plutil -insert CFBundleDisplayName -string "KiCad BOM Tool" "$plist"
+            plutil -insert CFBundleIdentifier -string "com.sunipkm.kicadautoimporter.bomapp" "$plist"
+            plutil -insert CFBundleVersion -string "$version" "$plist"
+            plutil -insert CFBundleShortVersionString -string "$version" "$plist"
+            plutil -insert CFBundlePackageType -string "APPL" "$plist"
+            plutil -insert CFBundleExecutable -string "bom-app" "$plist"
+            plutil -insert CFBundleIconFile -string "AppIcon" "$plist"
+            plutil -insert CFBundleInfoDictionaryVersion -string "6.0" "$plist"
+            plutil -insert LSMinimumSystemVersion -string "11.0" "$plist"
+            plutil -insert NSHighResolutionCapable -bool true "$plist"
+
+            # Same ad-hoc signing reasoning as kicad-auto-importer's own
+            # .app above — must run last, after every file is in place.
+            codesign --force --deep --sign - "$app_dir"
+          done
+
       # A DMG rather than a bare `.tar.gz` of the `.app`: this is the
       # familiar "drag the app onto Applications" installer experience
       # macOS users expect, built with `create-dmg` (not preinstalled,
@@ -184,14 +255,37 @@ jobs:
               --no-internet-enable \
               "kicad-auto-importer-$target.dmg" \
               "$staging_dir"
+
+            # bom-app gets its own DMG, in its own clean staging
+            # directory — same reasoning as above, and kept as a
+            # separate installer from kicad-auto-importer's rather than
+            # one DMG with two apps, matching how these two ship
+            # everywhere else (independent binaries/installers, see the
+            # root README's "Workspace layout").
+            bom_staging_dir="target/$target/bom-dmg-staging"
+            rm -rf "$bom_staging_dir"
+            mkdir -p "$bom_staging_dir"
+            cp -R "$release_dir/KiCad BOM Tool.app" "$bom_staging_dir/"
+
+            create-dmg \
+              --volname "KiCad BOM Tool" \
+              --window-size 660 400 \
+              --icon-size 128 \
+              --icon "KiCad BOM Tool.app" 180 170 \
+              --app-drop-link 480 170 \
+              --no-internet-enable \
+              "bom-app-$target.dmg" \
+              "$bom_staging_dir"
           done
 
       # An NSIS installer rather than a bare `.exe`: Start Menu shortcut,
       # an uninstaller Add/Remove Programs can find, and a proper
       # install location — see packaging/windows/installer.nsi for why
-      # it's a per-user (no admin/UAC) install. Unlike the older
-      # windows-2022 image, windows-2025 (what `windows-latest` now
-      # points to) dropped NSIS from its preinstalled software
+      # it's a per-user (no admin/UAC) install, and for why this one
+      # installer packages *both* kicad-auto-importer.exe and
+      # bom-app.exe rather than shipping two separate installers. Unlike
+      # the older windows-2022 image, windows-2025 (what `windows-latest`
+      # now points to) dropped NSIS from its preinstalled software
       # (actions/runner-images#11754), so `makensis` needs an explicit
       # install here.
       - name: Install NSIS
@@ -250,12 +344,21 @@ jobs:
             Get-ChildItem $releaseDir
             $exePath = "$releaseDir\kicad-auto-importer.exe"
             $icoPath = "$releaseDir\app.ico"
+            $bomExePath = "$releaseDir\bom-app.exe"
             if (-not (Test-Path $exePath)) {
               Write-Output "::error::kicad-auto-importer.exe missing from $releaseDir right before packaging"
               exit 1
             }
             if (-not (Test-Path $icoPath)) {
               Write-Output "::error::app.ico missing from $releaseDir after --emit-ico"
+              exit 1
+            }
+            # bom-app.exe needs no separate --emit-ico: `tauri-build`
+            # already embeds `bom-app/src-tauri/icons/icon.ico` as its
+            # Windows resource icon at compile time, so its Start Menu
+            # shortcut (installer.nsi) uses that instead.
+            if (-not (Test-Path $bomExePath)) {
+              Write-Output "::error::bom-app.exe missing from $releaseDir right before packaging"
               exit 1
             }
 
@@ -265,6 +368,7 @@ jobs:
             makensis `
               "-DEXE_PATH=$exePath" `
               "-DICO_PATH=$icoPath" `
+              "-DBOM_EXE_PATH=$bomExePath" `
               "-DPRODUCT_VERSION=$version" `
               "-DFILE_VERSION=$versionNumeric" `
               "-DOUT_FILE=$outFilePath" `
@@ -279,4 +383,6 @@ jobs:
         if: inputs.build_release
         with:
           name: kicad-auto-importer-${{ matrix.os }}
-          path: kicad-auto-importer-*.${{ matrix.archive_ext }}
+          path: |
+            kicad-auto-importer-*.${{ matrix.archive_ext }}
+            bom-app-*.${{ matrix.archive_ext }}
