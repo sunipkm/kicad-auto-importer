@@ -10,6 +10,7 @@ pub mod digikey;
 pub mod footprint_importer;
 pub mod global_settings;
 pub mod kicad_paths;
+pub mod kicad_process;
 pub mod library_import;
 pub mod model_importer;
 pub mod mouser;

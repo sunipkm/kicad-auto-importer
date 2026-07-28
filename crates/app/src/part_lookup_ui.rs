@@ -42,6 +42,7 @@ use egui_extras::{Column, TableBuilder};
 use egui_phosphor::regular as icon;
 
 use kicad_auto_importer_core::bom_report::{self, ReportRow};
+use kicad_auto_importer_core::kicad_process;
 use kicad_auto_importer_core::parts_lookup::{self, PartsCredentials};
 use kicad_auto_importer_core::schematic::{self, PlacedSymbol, SchematicFile};
 use kicad_auto_importer_core::sexp::SexpNode;
@@ -231,6 +232,41 @@ impl PartLookupState {
         self.status.clear();
         self.results.clear();
 
+        let project_name = project_dir
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "project".to_string());
+
+        // Checked here (not just inside `run_lookup_batch`) so the user
+        // sees it *before* committing to a batch that will burn
+        // Mouser/DigiKey API calls whose write-back would just get
+        // discarded — the in-window detail log alone is easy to miss
+        // now that it's collapsed by default. KiCad locks a project as a
+        // whole (project manager, schematic editor, and PCB editor all
+        // count), not per individual `.kicad_sch` — see `kicad_process`'s
+        // docs.
+        let kicad_open = kicad_process::project_open_in_kicad(project_dir);
+        if kicad_open {
+            let choice = rfd::MessageDialog::new()
+                .set_title("KiCad Has This Project Open")
+                .set_description(format!(
+                    "'{project_name}' appears to be open in KiCad.\n\n\
+                     Populate BOM can still look up stock/lifecycle info and generate the \
+                     report, but schematic changes will NOT be written back until you close \
+                     it in KiCad.\n\nContinue anyway?"
+                ))
+                .set_level(rfd::MessageLevel::Warning)
+                .set_buttons(rfd::MessageButtons::OkCancel)
+                .show();
+            if choice != rfd::MessageDialogResult::Ok {
+                self.status =
+                    "Populate BOM cancelled \u{2014} close the project in KiCad first, or \
+                     confirm the warning next time to proceed anyway."
+                        .to_string();
+                return;
+            }
+        }
+
         let selected: Vec<SelectedRow> = self
             .rows
             .iter()
@@ -245,10 +281,6 @@ impl PartLookupState {
             })
             .collect();
 
-        let project_name = project_dir
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| "project".to_string());
         let default_report_name = format!(
             "{}_stock_report_{}.pdf",
             project_name.replace(' ', "_"),
@@ -279,7 +311,15 @@ impl PartLookupState {
         thread::Builder::new()
             .name("part-lookup".into())
             .spawn(move || {
-                run_lookup_batch(selected, project_name, report_path, force, credentials, tx)
+                run_lookup_batch(
+                    selected,
+                    project_name,
+                    report_path,
+                    force,
+                    kicad_open,
+                    credentials,
+                    tx,
+                )
             })
             .expect("failed to spawn the part-lookup thread");
     }
@@ -301,11 +341,23 @@ impl PartLookupState {
 /// which is the whole point — Mouser/DigiKey rate limits and plain
 /// courtesy both argue against re-fetching a part's stock status every
 /// time the button is clicked.
+///
+/// If `kicad_open` is set (see `kicad_process::project_open_in_kicad`,
+/// checked once in `look_up_selected`), every schematic file's final
+/// `.save()` is skipped — lookups, the in-memory property patch, and the
+/// PDF report all still happen normally, since the vendor API calls are
+/// already spent and the report is still useful; only the on-disk write
+/// KiCad's own already-open copy would otherwise silently clobber is
+/// held back. Because nothing hits disk in that case, the `Last Checked`
+/// gate isn't persisted either, so the next run (once KiCad is closed)
+/// retries those same parts cleanly instead of treating a blocked write
+/// as "checked".
 fn run_lookup_batch(
     selected: Vec<SelectedRow>,
     project_name: String,
     report_path: PathBuf,
     force: bool,
+    kicad_open: bool,
     credentials: PartsCredentials,
     tx: mpsc::Sender<LookupEvent>,
 ) {
@@ -325,6 +377,14 @@ fn run_lookup_batch(
     let send_current = |reference: String| {
         let _ = tx.send(LookupEvent::CurrentItem(reference));
     };
+
+    if kicad_open {
+        send_log(format!(
+            "\u{26a0} '{project_name}' appears to be open in KiCad \u{2014} looking up and \
+             reporting stock/lifecycle info, but schematic changes will NOT be written back \
+             until you close it."
+        ));
+    }
 
     // One shared timestamp for the whole batch — a run takes seconds to
     // low minutes, so there's no meaningful staleness difference between
@@ -459,7 +519,12 @@ fn run_lookup_batch(
         }
 
         if sch.has_pending_changes() {
-            if let Err(exc) = sch.save() {
+            if kicad_open {
+                send_log(format!(
+                    "\u{23f8} Skipped saving '{}' \u{2014} KiCad has this project open.",
+                    path.display()
+                ));
+            } else if let Err(exc) = sch.save() {
                 send_log(format!(
                     "\u{2718} Could not save '{}': {exc}",
                     path.display()
