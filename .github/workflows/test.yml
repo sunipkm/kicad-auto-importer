@@ -167,7 +167,16 @@ jobs:
       # install here.
       - name: Install NSIS
         if: inputs.build_release && matrix.os == 'windows-latest'
-        run: choco install nsis -y --no-progress
+        # `choco install` adds NSIS to the machine PATH via the registry,
+        # but each workflow step runs as a fresh process spawned from the
+        # job's already-cached environment, so that change isn't picked up
+        # mid-job — later steps (like the bash one below invoking
+        # `makensis`) would still fail to find it without this explicit
+        # $GITHUB_PATH append.
+        shell: pwsh
+        run: |
+          choco install nsis -y --no-progress
+          Add-Content -Path $env:GITHUB_PATH -Value 'C:\Program Files (x86)\NSIS'
 
       - name: Package Windows installer(s)
         if: inputs.build_release && matrix.os == 'windows-latest'
