@@ -5,18 +5,20 @@
 ; software). Everything platform/build-specific is passed in on the
 ; command line rather than hardcoded here, so this script never needs to
 ; know about cargo targets or where in the workspace it's being invoked
-; from. EXE_PATH/ICO_PATH/OUT_FILE below must be absolute: makensis
-; chdirs to this script's own directory before resolving relative paths,
-; which CI's invocation deliberately works around by passing absolute
-; paths rather than relying on a working-directory flag:
+; from. EXE_PATH/ICO_PATH/OUT_FILE below must be absolute, backslash-
+; separated Windows paths: makensis chdirs to this script's own
+; directory before resolving relative paths, and its `File` instruction
+; has also been observed failing to find an otherwise-real file when
+; given a forward-slash path — CI's invocation (PowerShell, not bash;
+; see test.yml) sidesteps both by building genuine native paths itself:
 ;
-;   makensis ^
-;     /DEXE_PATH=<path to the built kicad-auto-importer.exe> ^
-;     /DICO_PATH=<path to a standalone .ico, see icon::write_ico> ^
-;     /DPRODUCT_VERSION=<full version, e.g. 0.0.1-pre0> ^
-;     /DFILE_VERSION=<strictly-numeric X.Y.Z, e.g. 0.0.1> ^
-;     /DOUT_FILE=<path the built installer .exe should be written to> ^
-;     installer.nsi
+;   makensis `
+;     "-DEXE_PATH=<path to the built kicad-auto-importer.exe>" `
+;     "-DICO_PATH=<path to a standalone .ico, see icon::write_ico>" `
+;     "-DPRODUCT_VERSION=<full version, e.g. 0.0.1-pre0>" `
+;     "-DFILE_VERSION=<strictly-numeric X.Y.Z, e.g. 0.0.1>" `
+;     "-DOUT_FILE=<path the built installer .exe should be written to>" `
+;     packaging/windows/installer.nsi
 ;
 ; `PRODUCT_VERSION` and `FILE_VERSION` are deliberately separate: this
 ; project tags pre-releases like "v0.0.1-pre0" (see release.yml), but

@@ -207,35 +207,33 @@ jobs:
           choco install nsis -y --no-progress
           Add-Content -Path $env:GITHUB_PATH -Value 'C:\Program Files (x86)\NSIS'
 
+      # PowerShell, not bash: this step is Windows-only (no cross-platform
+      # script to share with the Linux/macOS steps above), and every bug
+      # this step went through — /NOCD being mangled by Git Bash's MSYS
+      # argv translation, `pwd -W`'s stray \r, NSIS's `File` instruction
+      # choking on forward slashes from a Unix-style `pwd` — came from
+      # routing a native Win32 tool (makensis) through a POSIX-emulation
+      # shell instead of just using Windows' own path conventions
+      # natively via pwsh.
       - name: Package Windows installer(s)
         if: inputs.build_release && matrix.os == 'windows-latest'
-        shell: bash
+        shell: pwsh
         run: |
-          set -euo pipefail
-          version="${GITHUB_REF_NAME#v}"
+          $ErrorActionPreference = 'Stop'
+          $version = $env:GITHUB_REF_NAME -replace '^v', ''
           # NSIS's VIProductVersion directive requires a strictly
           # numeric "X.X.X.X" — strip any "-pre0"-style suffix (release
           # tags can have one; see the tag patterns this workflow's
           # caller, release.yml, triggers on) just for that directive,
           # while the full tag (via PRODUCT_VERSION) still shows up
           # everywhere else: the installer UI and Add/Remove Programs.
-          version_numeric="${version%%-*}"
-          # Windows-style absolute path (Git Bash's `pwd -W`, giving
-          # "C:/..." rather than the MSYS-internal "/c/..." plain `pwd`
-          # would) — everything passed to makensis below is built from
-          # this rather than left relative, so it resolves correctly
-          # regardless of makensis's own working directory. By default
-          # makensis chdirs to installer.nsi's own directory
-          # (packaging/windows/) before resolving relative paths, which
-          # silently broke this when EXE_PATH/ICO_PATH/OUT_FILE were
-          # repo-root-relative strings.
-          # `tr -d '\r'`: `pwd -W` is a Git Bash builtin that can emit a
-          # trailing \r; bash's $(...) only strips the trailing \n, so
-          # without this a stray \r would end up glued onto the path.
-          workspace="$(pwd -W | tr -d '\r')"
-          for target in ${{ join(matrix.targets, ' ') }}; do
-            release_dir="$workspace/target/$target/release"
-            "$release_dir/kicad-auto-importer.exe" --emit-ico "$release_dir/app.ico"
+          $versionNumeric = $version -replace '-.*$', ''
+
+          foreach ($target in ("${{ join(matrix.targets, ' ') }}" -split ' ')) {
+            $releaseDir = "$env:GITHUB_WORKSPACE\target\$target\release"
+
+            & "$releaseDir\kicad-auto-importer.exe" --emit-ico "$releaseDir\app.ico"
+            if ($LASTEXITCODE -ne 0) { throw "--emit-ico failed with exit code $LASTEXITCODE" }
 
             # Fail fast with a clear message here rather than NSIS's more
             # opaque "no files found" if the exe isn't where expected —
@@ -243,23 +241,28 @@ jobs:
             # unsigned .exe is a known failure mode on these runners (see
             # the "Exclude target/ from Windows Defender scanning" step
             # above).
-            ls -la "$release_dir"
-            if [[ ! -f "$release_dir/kicad-auto-importer.exe" ]]; then
-              echo "::error::kicad-auto-importer.exe missing from $release_dir right before packaging" >&2
+            Get-ChildItem $releaseDir
+            $exePath = "$releaseDir\kicad-auto-importer.exe"
+            if (-not (Test-Path $exePath)) {
+              Write-Output "::error::kicad-auto-importer.exe missing from $releaseDir right before packaging"
               exit 1
-            fi
+            }
 
-            out_file="KiCadAutoImporter-Setup-$target.exe"
-            makensis \
-              "-DEXE_PATH=$release_dir/kicad-auto-importer.exe" \
-              "-DICO_PATH=$release_dir/app.ico" \
-              "-DPRODUCT_VERSION=$version" \
-              "-DFILE_VERSION=$version_numeric" \
-              "-DOUT_FILE=$workspace/$out_file" \
+            $outFile = "KiCadAutoImporter-Setup-$target.exe"
+            $outFilePath = "$env:GITHUB_WORKSPACE\$outFile"
+
+            makensis `
+              "-DEXE_PATH=$exePath" `
+              "-DICO_PATH=$releaseDir\app.ico" `
+              "-DPRODUCT_VERSION=$version" `
+              "-DFILE_VERSION=$versionNumeric" `
+              "-DOUT_FILE=$outFilePath" `
               packaging/windows/installer.nsi
+            if ($LASTEXITCODE -ne 0) { throw "makensis failed with exit code $LASTEXITCODE" }
 
-            7z a "kicad-auto-importer-$target.zip" "$out_file"
-          done
+            7z a "kicad-auto-importer-$target.zip" $outFile
+            if ($LASTEXITCODE -ne 0) { throw "7z failed with exit code $LASTEXITCODE" }
+          }
 
       - uses: actions/upload-artifact@v4
         if: inputs.build_release
