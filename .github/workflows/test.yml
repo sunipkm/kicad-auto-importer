@@ -196,7 +196,12 @@ jobs:
             "$release_dir/kicad-auto-importer.exe" --emit-ico "$release_dir/app.ico"
 
             out_file="KiCadAutoImporter-Setup-$target.exe"
-            makensis \
+            # `/NOCD`: without it, makensis chdirs to installer.nsi's own
+            # directory (packaging/windows/) before resolving any relative
+            # path, so the repo-root-relative paths built above (EXE_PATH,
+            # ICO_PATH, OUT_FILE) would silently resolve against the wrong
+            # base and fail to open.
+            makensis /NOCD \
               "-DEXE_PATH=$release_dir/kicad-auto-importer.exe" \
               "-DICO_PATH=$release_dir/app.ico" \
               "-DPRODUCT_VERSION=$version" \

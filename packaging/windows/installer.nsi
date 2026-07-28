@@ -1,12 +1,14 @@
 ; NSIS installer for KiCad Auto Importer.
 ;
-; Built by CI (.github/workflows/test.yml) via `makensis`, which is
-; preinstalled on GitHub's windows-latest runners — no extra setup step
-; needed. Everything platform/build-specific is passed in on the command
-; line rather than hardcoded here, so this script never needs to know
-; about cargo targets or where in the workspace it's being invoked from:
+; Built by CI (.github/workflows/test.yml) via `makensis` (installed there
+; with choco, since windows-latest dropped NSIS from its preinstalled
+; software). Everything platform/build-specific is passed in on the
+; command line rather than hardcoded here, so this script never needs to
+; know about cargo targets or where in the workspace it's being invoked
+; from. Paths are relative to the repo root (CI's invocation passes
+; `/NOCD` so makensis doesn't chdir here first):
 ;
-;   makensis ^
+;   makensis /NOCD ^
 ;     /DEXE_PATH=<path to the built kicad-auto-importer.exe> ^
 ;     /DICO_PATH=<path to a standalone .ico, see icon::write_ico> ^
 ;     /DPRODUCT_VERSION=<full version, e.g. 0.0.1-pre0> ^
