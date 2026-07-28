@@ -196,12 +196,18 @@ jobs:
             "$release_dir/kicad-auto-importer.exe" --emit-ico "$release_dir/app.ico"
 
             out_file="KiCadAutoImporter-Setup-$target.exe"
-            # `/NOCD`: without it, makensis chdirs to installer.nsi's own
-            # directory (packaging/windows/) before resolving any relative
-            # path, so the repo-root-relative paths built above (EXE_PATH,
-            # ICO_PATH, OUT_FILE) would silently resolve against the wrong
-            # base and fail to open.
-            makensis /NOCD \
+            # `//NOCD` (doubled leading slash): without it, makensis
+            # chdirs to installer.nsi's own directory (packaging/windows/)
+            # before resolving any relative path, so the repo-root-relative
+            # paths built above (EXE_PATH, ICO_PATH, OUT_FILE) would
+            # silently resolve against the wrong base and fail to open.
+            # The double slash (rather than plain `/NOCD`) is required
+            # because this step runs under Git Bash's MSYS shell, which
+            # mangles single-leading-slash args into Windows paths
+            # (e.g. "/NOCD" -> "C:/Program Files/Git/NOCD") before
+            # makensis ever sees them; a doubled leading slash tells
+            # MSYS's argv translator to leave the argument alone.
+            makensis //NOCD \
               "-DEXE_PATH=$release_dir/kicad-auto-importer.exe" \
               "-DICO_PATH=$release_dir/app.ico" \
               "-DPRODUCT_VERSION=$version" \
