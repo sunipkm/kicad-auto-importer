@@ -21,11 +21,13 @@ jobs:
             targets: [x86_64-unknown-linux-gnu]
             archive_ext: tar.gz
           - os: macos-latest
-            # Apple Silicon only — unsigned x86_64 builds aren't worth
-            # shipping since Gatekeeper on Apple Silicon Macs marks even
-            # the *native* aarch64 build "damaged" without a paid
-            # Developer ID signature/notarization, and Intel Macs are a
-            # shrinking minority besides.
+            # Apple Silicon only — an x86_64 build isn't worth shipping
+            # alongside it: Intel Macs are a shrinking minority, and (per
+            # the ad-hoc codesign step below) every build still needs a
+            # manual right-click > Open past Gatekeeper's "unidentified
+            # developer" prompt once anyway, since there's no paid
+            # Developer ID for notarization — doubling that friction for
+            # a shrinking platform isn't worth the build.
             targets: [aarch64-apple-darwin]
             archive_ext: dmg
           - os: windows-latest
@@ -54,6 +56,20 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Test
         run: cargo test --workspace
+
+      # Freshly-compiled, unsigned Rust binaries are a well-documented
+      # Windows Defender false-positive magnet (heuristic detections like
+      # "Trojan:Win32/Wacatac.B!ml" — see rust-lang/rust#88297); real-time
+      # protection quarantining/deleting the .exe shortly after it's
+      # built would explain `makensis` later failing to find it even
+      # though it ran successfully seconds earlier in the same CI run.
+      # `-ErrorAction SilentlyContinue`: purely defensive, so this never
+      # breaks the build on a runner image where the cmdlet behaves
+      # differently or isn't needed.
+      - name: Exclude target/ from Windows Defender scanning
+        if: inputs.build_release && matrix.os == 'windows-latest'
+        shell: pwsh
+        run: Add-MpPreference -ExclusionPath "$env:GITHUB_WORKSPACE\target" -ErrorAction SilentlyContinue
 
       - name: Build release binaries
         if: inputs.build_release
@@ -112,6 +128,19 @@ jobs:
             plutil -insert CFBundleInfoDictionaryVersion -string "6.0" "$plist"
             plutil -insert LSMinimumSystemVersion -string "11.0" "$plist"
             plutil -insert NSHighResolutionCapable -bool true "$plist"
+
+            # Ad-hoc sign (no paid Developer ID, so no notarization
+            # either — see the matrix comment above): without *any*
+            # signature, Gatekeeper on Apple Silicon refuses to run the
+            # bundle at all once quarantined (macOS requires a valid
+            # signature, even ad-hoc, to execute arm64 code) and reports
+            # it as "damaged" rather than the older, bypassable
+            # "unidentified developer" prompt. Ad-hoc signing fixes
+            # "damaged"; users still have to right-click > Open (or clear
+            # the quarantine xattr) once, since it's not notarized. Must
+            # run last: signing anything earlier and then still copying
+            # files into the bundle (icon, Info.plist) would invalidate it.
+            codesign --force --deep --sign - "$app_dir"
           done
 
       # A DMG rather than a bare `.tar.gz` of the `.app`: this is the
@@ -191,28 +220,42 @@ jobs:
           # while the full tag (via PRODUCT_VERSION) still shows up
           # everywhere else: the installer UI and Add/Remove Programs.
           version_numeric="${version%%-*}"
+          # Windows-style absolute path (Git Bash's `pwd -W`, giving
+          # "C:/..." rather than the MSYS-internal "/c/..." plain `pwd`
+          # would) — everything passed to makensis below is built from
+          # this rather than left relative, so it resolves correctly
+          # regardless of makensis's own working directory. By default
+          # makensis chdirs to installer.nsi's own directory
+          # (packaging/windows/) before resolving relative paths, which
+          # silently broke this when EXE_PATH/ICO_PATH/OUT_FILE were
+          # repo-root-relative strings.
+          # `tr -d '\r'`: `pwd -W` is a Git Bash builtin that can emit a
+          # trailing \r; bash's $(...) only strips the trailing \n, so
+          # without this a stray \r would end up glued onto the path.
+          workspace="$(pwd -W | tr -d '\r')"
           for target in ${{ join(matrix.targets, ' ') }}; do
-            release_dir="target/$target/release"
+            release_dir="$workspace/target/$target/release"
             "$release_dir/kicad-auto-importer.exe" --emit-ico "$release_dir/app.ico"
 
+            # Fail fast with a clear message here rather than NSIS's more
+            # opaque "no files found" if the exe isn't where expected —
+            # e.g. Windows Defender quarantining a freshly-built,
+            # unsigned .exe is a known failure mode on these runners (see
+            # the "Exclude target/ from Windows Defender scanning" step
+            # above).
+            ls -la "$release_dir"
+            if [[ ! -f "$release_dir/kicad-auto-importer.exe" ]]; then
+              echo "::error::kicad-auto-importer.exe missing from $release_dir right before packaging" >&2
+              exit 1
+            fi
+
             out_file="KiCadAutoImporter-Setup-$target.exe"
-            # `//NOCD` (doubled leading slash): without it, makensis
-            # chdirs to installer.nsi's own directory (packaging/windows/)
-            # before resolving any relative path, so the repo-root-relative
-            # paths built above (EXE_PATH, ICO_PATH, OUT_FILE) would
-            # silently resolve against the wrong base and fail to open.
-            # The double slash (rather than plain `/NOCD`) is required
-            # because this step runs under Git Bash's MSYS shell, which
-            # mangles single-leading-slash args into Windows paths
-            # (e.g. "/NOCD" -> "C:/Program Files/Git/NOCD") before
-            # makensis ever sees them; a doubled leading slash tells
-            # MSYS's argv translator to leave the argument alone.
-            makensis //NOCD \
+            makensis \
               "-DEXE_PATH=$release_dir/kicad-auto-importer.exe" \
               "-DICO_PATH=$release_dir/app.ico" \
               "-DPRODUCT_VERSION=$version" \
               "-DFILE_VERSION=$version_numeric" \
-              "-DOUT_FILE=$out_file" \
+              "-DOUT_FILE=$workspace/$out_file" \
               packaging/windows/installer.nsi
 
             7z a "kicad-auto-importer-$target.zip" "$out_file"

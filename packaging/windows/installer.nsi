@@ -5,10 +5,12 @@
 ; software). Everything platform/build-specific is passed in on the
 ; command line rather than hardcoded here, so this script never needs to
 ; know about cargo targets or where in the workspace it's being invoked
-; from. Paths are relative to the repo root (CI's invocation passes
-; `/NOCD` so makensis doesn't chdir here first):
+; from. EXE_PATH/ICO_PATH/OUT_FILE below must be absolute: makensis
+; chdirs to this script's own directory before resolving relative paths,
+; which CI's invocation deliberately works around by passing absolute
+; paths rather than relying on a working-directory flag:
 ;
-;   makensis /NOCD ^
+;   makensis ^
 ;     /DEXE_PATH=<path to the built kicad-auto-importer.exe> ^
 ;     /DICO_PATH=<path to a standalone .ico, see icon::write_ico> ^
 ;     /DPRODUCT_VERSION=<full version, e.g. 0.0.1-pre0> ^
