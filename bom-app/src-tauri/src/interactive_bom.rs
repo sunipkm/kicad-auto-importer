@@ -148,9 +148,12 @@ pub fn build_pcbdata(board: &PcbBoard, priced_rows: &[PricedRow]) -> Value {
 ///
 /// The embedded JSON is hardened against `</script` injection that would
 /// let adversarial schematic property text break out of the `<script>` block.
-pub fn render_html(pcbdata: &Value) -> String {
+///
+/// `dark_mode` seeds ibom.js's dark-mode checkbox with the host OS's current
+/// theme; the viewer's own checkbox can still override it afterwards.
+pub fn render_html(pcbdata: &Value, dark_mode: bool) -> String {
     let config = json!({
-        "dark_mode": false,
+        "dark_mode": dark_mode,
         "show_pads": true,
         "show_fabrication": false,
         "show_silkscreen": false,
@@ -345,10 +348,19 @@ mod tests {
     fn render_html_contains_config_and_pcbdata() {
         let board = empty_board();
         let data = build_pcbdata(&board, &[]);
-        let html = render_html(&data);
+        let html = render_html(&data, false);
         assert!(html.contains("var config ="));
         assert!(html.contains("var pcbdata ="));
         assert!(html.contains("\"layer_view\":\"FB\""));
+        assert!(html.contains("\"dark_mode\":false"));
+    }
+
+    #[test]
+    fn render_html_honours_dark_mode_flag() {
+        let board = empty_board();
+        let data = build_pcbdata(&board, &[]);
+        let html = render_html(&data, true);
+        assert!(html.contains("\"dark_mode\":true"));
     }
 
     #[test]

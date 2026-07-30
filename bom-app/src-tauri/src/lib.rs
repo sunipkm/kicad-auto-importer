@@ -564,7 +564,11 @@ fn generate_bom(
             match pcb::parse_pcb(&pcb_path) {
                 Ok(board) => {
                     let pcbdata = interactive_bom::build_pcbdata(&board, &priced_rows);
-                    let html = interactive_bom::render_html(&pcbdata);
+                    let dark_mode = app
+                        .get_webview_window("main")
+                        .and_then(|w| w.theme().ok())
+                        .is_some_and(|t| t == tauri::Theme::Dark);
+                    let html = interactive_bom::render_html(&pcbdata, dark_mode);
                     let session = InteractiveBomSession {
                         html,
                         priced_rows,
