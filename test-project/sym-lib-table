@@ -1,0 +1,4 @@
+(sym_lib_table
+  (version 7)
+  (lib (name "kiwi-pwr-in")(type "KiCad")(uri "${KIPRJMOD}/kiwi-pwr-in.kicad_sym")(options "")(descr ""))
+)
