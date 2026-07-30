@@ -10,6 +10,7 @@
 pub mod kicad_paths;
 #[cfg(feature = "kicad-process")]
 pub mod kicad_process;
+pub mod pcb;
 pub mod schematic;
 pub mod sexp;
 pub mod symbol_importer;

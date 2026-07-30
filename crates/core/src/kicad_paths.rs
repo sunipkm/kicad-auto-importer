@@ -9,7 +9,7 @@ use std::sync::OnceLock;
 
 use regex::Regex;
 
-use crate::sexp::{self, Atom, Child, SexpNode};
+use crate::sexp::{Atom, Child, SexpNode};
 
 // ── KiCad config directory discovery ────────────────────────────────────
 
@@ -156,50 +156,63 @@ pub struct LibEntry {
     pub descr: String,
 }
 
+impl LibEntry {
+    /// Parse a sym-lib-table or fp-lib-table file. Returns `[]` if the file
+    /// doesn't exist or fails to parse.
+    pub fn from_table(table_path: &Path, kiprjmod: Option<&str>) -> Vec<Self> {
+        let Ok(text) = fs::read_to_string(table_path) else {
+            return Vec::new();
+        };
+        let Ok(root) = SexpNode::parse(&text) else {
+            return Vec::new();
+        };
+
+        let mut entries = Vec::new();
+        for lib in root.find_all("lib") {
+            let mut entry = LibEntry::default();
+            for child in &lib.children {
+                if let Child::Node(sub) = child {
+                    let val = sub
+                        .first_atom()
+                        .map(|a| a.text().to_string())
+                        .unwrap_or_default();
+                    match sub.name.as_str() {
+                        "name" => entry.name = val,
+                        "type" => entry.lib_type = val,
+                        "uri" => entry.uri = val,
+                        "descr" => entry.descr = val,
+                        _ => {}
+                    }
+                }
+            }
+            if !entry.uri.is_empty() {
+                entry.uri = expand_kicad_vars(&entry.uri, kiprjmod);
+            }
+            if !entry.name.is_empty() {
+                entries.push(entry);
+            }
+        }
+        entries
+    }
+
+    /// Parse only the project-local table (sym-lib-table or fp-lib-table).
+    pub fn from_project(project_dir: &Path, table_filename: &str) -> Vec<Self> {
+        Self::from_table(
+            &project_dir.join(table_filename),
+            Some(&project_dir.to_string_lossy()),
+        )
+    }
+}
+
 /// Parse a sym-lib-table or fp-lib-table file. Returns `[]` if the file
 /// doesn't exist or fails to parse.
 pub fn parse_lib_table(table_path: &Path, kiprjmod: Option<&str>) -> Vec<LibEntry> {
-    let Ok(text) = fs::read_to_string(table_path) else {
-        return Vec::new();
-    };
-    let Ok(root) = sexp::parse(&text) else {
-        return Vec::new();
-    };
-
-    let mut entries = Vec::new();
-    for lib in root.find_all("lib") {
-        let mut entry = LibEntry::default();
-        for child in &lib.children {
-            if let Child::Node(sub) = child {
-                let val = sub
-                    .first_atom()
-                    .map(|a| a.text().to_string())
-                    .unwrap_or_default();
-                match sub.name.as_str() {
-                    "name" => entry.name = val,
-                    "type" => entry.lib_type = val,
-                    "uri" => entry.uri = val,
-                    "descr" => entry.descr = val,
-                    _ => {}
-                }
-            }
-        }
-        if !entry.uri.is_empty() {
-            entry.uri = expand_kicad_vars(&entry.uri, kiprjmod);
-        }
-        if !entry.name.is_empty() {
-            entries.push(entry);
-        }
-    }
-    entries
+    LibEntry::from_table(table_path, kiprjmod)
 }
 
 /// Parse only the project-local table (sym-lib-table or fp-lib-table).
 pub fn load_project_local_table(project_dir: &Path, table_filename: &str) -> Vec<LibEntry> {
-    parse_lib_table(
-        &project_dir.join(table_filename),
-        Some(&project_dir.to_string_lossy()),
-    )
+    LibEntry::from_project(project_dir, table_filename)
 }
 
 // ── lib table writing / registration ────────────────────────────────────
@@ -298,7 +311,7 @@ pub fn add_or_update_lib_entry(
     let mut root = if table_path.is_file() {
         let parsed = fs::read_to_string(table_path)
             .ok()
-            .and_then(|s| sexp::parse(&s).ok());
+            .and_then(|s| SexpNode::parse(&s).ok());
         match parsed {
             Some(r) => r,
             None => {
@@ -351,7 +364,7 @@ pub fn add_or_update_lib_entry(
     if let Some(parent) = table_path.parent() {
         fs::create_dir_all(parent)?;
     }
-    fs::write(table_path, sexp::render(&root))?;
+    fs::write(table_path, root.render())?;
 
     Ok((true, final_nickname))
 }
@@ -474,7 +487,7 @@ mod tests {
 
         let table_path = project_dir.join("sym-lib-table");
         assert!(table_path.is_file());
-        let entries = parse_lib_table(&table_path, Some(&project_dir.to_string_lossy()));
+        let entries = LibEntry::from_table(&table_path, Some(&project_dir.to_string_lossy()));
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].name, "Parts");
         // Registered URIs are always forward-slash-normalized (KiCad's own
@@ -513,7 +526,7 @@ mod tests {
         assert_eq!(nickname, "MyRenamedLib");
         assert_eq!(changed_flag, Some(false));
 
-        let entries = parse_lib_table(&table_path, Some(&project_dir.to_string_lossy()));
+        let entries = LibEntry::from_table(&table_path, Some(&project_dir.to_string_lossy()));
         assert_eq!(entries.len(), 1); // no duplicate entry added
     }
 

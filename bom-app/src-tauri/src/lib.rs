@@ -3,7 +3,7 @@
 //! the repository root `README.md`'s "Workspace layout" section for
 //! why).
 //!
-//! Commands here wrap `kicad_auto_importer_core` for the shared KiCad
+//! Commands here wrap `kicad_parse` for the shared KiCad
 //! file-format primitives (schematic parsing, symbol library patching)
 //! plus this app's own local modules for everything vendor/pricing-
 //! specific (Mouser/DigiKey clients, grouping/pricing, PDF/XLSX
@@ -17,24 +17,40 @@ mod bom_report;
 pub mod digikey;
 mod generate_bom;
 mod http_agent;
+mod interactive_bom;
 pub mod mouser;
 mod parts_cache;
 mod parts_lookup;
 mod populate_bom;
 mod vendor_credentials;
+mod xlsx_columns;
 
-use tauri::{AppHandle, Emitter};
+use std::sync::Mutex;
+
+use tauri::{AppHandle, Emitter, Manager};
 
 use bom_pricing::ChosenOffer;
 use digikey::DigikeyCredentials;
 use generate_bom::{BomBatchRequest, BomEvent};
-use kicad_auto_importer_core::kicad_process;
-use kicad_auto_importer_core::schematic::{self, SchematicFile};
-use kicad_auto_importer_core::symbol_importer::set_symbol_property;
+use kicad_parse::kicad_process;
+use kicad_parse::pcb;
+use kicad_parse::schematic::{self, SchematicFile};
+use kicad_parse::symbol_importer::set_symbol_property;
 use parts_cache::PartsCache;
 use parts_lookup::{PartsCredentials, ScoredCandidate, VendorCandidate};
 use populate_bom::{LookupEvent, SelectedRow, LAST_CHECKED_PROPERTY, RECHECK_THRESHOLD};
 use vendor_credentials::VendorCredentials;
+
+/// Cached output of one Generate BOM run — stored in managed state so
+/// `open_interactive_bom` / `export_interactive_bom_*` can access it
+/// after the thread completes.
+struct InteractiveBomSession {
+    html: String,
+    priced_rows: Vec<bom_pricing::PricedRow>,
+    board_qty: u32,
+}
+
+struct InteractiveBomState(Mutex<Option<InteractiveBomSession>>);
 
 /// Reads bom-app's own `~/.config/bom-app/settings.json` (per-OS
 /// equivalent — see `VendorCredentials`'s own docs), no longer shared
@@ -164,7 +180,7 @@ fn cached_result_for(
 }
 
 /// One row of `list_placed_symbols` — the frontend's own copy of
-/// `kicad_auto_importer_core::schematic::PlacedSymbol`, trimmed to what
+/// `kicad_parse::schematic::PlacedSymbol`, trimmed to what
 /// the Populate BOM table actually shows plus `index` (this call's
 /// position, matched back up by `populate_bom` below — see its own
 /// docs for why re-listing between the two calls would break that
@@ -467,6 +483,11 @@ enum GenerateBomEvent {
     Done {
         grand_total: f64,
     },
+    /// Fired after `Done` once the PCB is parsed and the interactive
+    /// BOM session is ready (or determined to be unavailable).
+    InteractiveBomReady {
+        available: bool,
+    },
 }
 
 impl From<BomEvent> for GenerateBomEvent {
@@ -523,16 +544,154 @@ fn generate_bom(
             passive_margin_percent,
             force_recheck,
             kicad_open,
-            project_name,
+            project_name: project_name.clone(),
             pdf_path: pdf_path.map(std::path::PathBuf::from),
             xlsx_path: xlsx_path.map(std::path::PathBuf::from),
             credentials,
         };
 
-        generate_bom::run_bom_batch(request, move |event| {
-            let _ = app.emit("generate-bom-event", GenerateBomEvent::from(event));
+        // Capture the event emitter in a closure; BomEvent::Done fires before
+        // run_bom_batch returns, so the frontend's "done" event still arrives
+        // promptly — we update interactive_bom_available after return.
+        let app2 = app.clone();
+        let priced_rows = generate_bom::run_bom_batch(request, move |event| {
+            // Translate Done with a placeholder; we fix it up below.
+            let _ = app2.emit("generate-bom-event", GenerateBomEvent::from(event));
         });
+
+        // After pricing completes, try to build the interactive BOM.
+        let ibom_available = if let Some(pcb_path) = pcb::find_root_pcb(&project_dir) {
+            match pcb::parse_pcb(&pcb_path) {
+                Ok(board) => {
+                    let pcbdata = interactive_bom::build_pcbdata(&board, &priced_rows);
+                    let html = interactive_bom::render_html(&pcbdata);
+                    let session = InteractiveBomSession {
+                        html,
+                        priced_rows,
+                        board_qty: board_qty.max(1),
+                    };
+                    if let Some(state) = app.try_state::<InteractiveBomState>() {
+                        *state.0.lock().unwrap() = Some(session);
+                        true
+                    } else {
+                        false
+                    }
+                }
+                Err(_) => false,
+            }
+        } else {
+            false
+        };
+
+        // Re-emit Done with the correct interactive_bom_available flag.
+        let _ = app.emit(
+            "generate-bom-event",
+            GenerateBomEvent::InteractiveBomReady { available: ibom_available },
+        );
     });
+}
+
+/// Open the last generated interactive BOM HTML in its own Tauri webview
+/// window (rather than the system browser — some browsers/sandboxes
+/// refuse to load arbitrary `file://` paths from outside their profile,
+/// e.g. snap/flatpak-confined browsers can't reach `/tmp`).
+/// Returns an error string if no BOM has been generated yet.
+#[tauri::command]
+fn open_interactive_bom(app: AppHandle) -> Result<(), String> {
+    let state = app
+        .try_state::<InteractiveBomState>()
+        .ok_or("Interactive BOM state not initialised")?;
+    let guard = state.0.lock().unwrap();
+    let session = guard.as_ref().ok_or("No interactive BOM has been generated yet")?;
+
+    let html_path = std::env::temp_dir().join("bom-app-ibom.html");
+    std::fs::write(&html_path, &session.html).map_err(|e| e.to_string())?;
+    drop(guard);
+
+    // Focus the existing window instead of stacking duplicates if the
+    // user clicks "View Interactive BOM" more than once.
+    if let Some(existing) = app.get_webview_window("interactive-bom") {
+        existing.set_focus().map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+
+    let url = tauri::Url::from_file_path(&html_path)
+        .map_err(|_| "Failed to build a file:// URL for the interactive BOM".to_string())?;
+
+    tauri::WebviewWindowBuilder::new(&app, "interactive-bom", tauri::WebviewUrl::External(url))
+        .title("Interactive BOM")
+        .inner_size(1200.0, 800.0)
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+/// Save the last generated interactive BOM HTML to a user-chosen file.
+#[tauri::command]
+async fn export_interactive_bom_html(app: AppHandle) -> Result<(), String> {
+    let html = {
+        let state = app
+            .try_state::<InteractiveBomState>()
+            .ok_or("Interactive BOM state not initialised")?;
+        let guard = state.0.lock().unwrap();
+        guard
+            .as_ref()
+            .ok_or("No interactive BOM has been generated yet")?
+            .html
+            .clone()
+    };
+
+    use tauri_plugin_dialog::DialogExt;
+    let Some(path) = app
+        .dialog()
+        .file()
+        .add_filter("HTML files", &["html"])
+        .blocking_save_file()
+    else {
+        return Ok(());
+    };
+    let path = path.into_path().map_err(|e| e.to_string())?;
+    std::fs::write(&path, html).map_err(|e| e.to_string())
+}
+
+/// Save the last generated interactive BOM as an XLSX spreadsheet.
+#[tauri::command]
+async fn export_interactive_bom_xlsx(app: AppHandle) -> Result<(), String> {
+    let (priced_rows, board_qty) = {
+        let state = app
+            .try_state::<InteractiveBomState>()
+            .ok_or("Interactive BOM state not initialised")?;
+        let guard = state.0.lock().unwrap();
+        let s = guard
+            .as_ref()
+            .ok_or("No interactive BOM has been generated yet")?;
+        (s.priced_rows.clone(), s.board_qty)
+    };
+
+    use tauri_plugin_dialog::DialogExt;
+    let Some(path) = app
+        .dialog()
+        .file()
+        .add_filter("Excel files", &["xlsx"])
+        .blocking_save_file()
+    else {
+        return Ok(());
+    };
+    let path = path.into_path().map_err(|e| e.to_string())?;
+    let xlsx_cols = xlsx_columns::XlsxColumnsConfig::load().visible_columns();
+    bom_report::generate_priced_bom_xlsx(&priced_rows, board_qty, &xlsx_cols, &path)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn load_xlsx_columns_config() -> xlsx_columns::XlsxColumnsConfig {
+    xlsx_columns::XlsxColumnsConfig::load()
+}
+
+#[tauri::command]
+fn save_xlsx_columns_config(config: xlsx_columns::XlsxColumnsConfig) -> Result<(), String> {
+    config.save().map_err(|e| e.to_string())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -543,6 +702,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .manage(InteractiveBomState(Mutex::new(None)))
         .invoke_handler(tauri::generate_handler![
             open_project,
             load_vendor_credentials,
@@ -555,7 +715,14 @@ pub fn run() {
             get_scored_candidates,
             apply_vendor_choice,
             list_part_groups,
-            generate_bom
+            generate_bom,
+            open_interactive_bom,
+            export_interactive_bom_html,
+            export_interactive_bom_xlsx,
+            load_xlsx_columns_config,
+            save_xlsx_columns_config,
+            load_xlsx_columns_config,
+            save_xlsx_columns_config,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

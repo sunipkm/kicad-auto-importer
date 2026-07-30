@@ -127,7 +127,7 @@ about how they're *packaged/installed*, not a merge of the two apps).
   batch (`generate_bom`), the credentials bridge
   (`load_vendor_credentials`/`save_vendor_credentials`), and the credential
   test buttons (`test_mouser_credentials`/`test_digikey_credentials`).
-  Schematic/symbol-library parsing is backed by `kicad_auto_importer_core`;
+  Schematic/symbol-library parsing is backed by `kicad_parse`;
   vendor/pricing logic is bom-app's own.
 - `src/App.tsx` — project picker + top-level layout.
 - `src/SettingsPanel.tsx` — Mouser/DigiKey credential fields and their
@@ -141,3 +141,15 @@ about how they're *packaged/installed*, not a merge of the two apps).
   a glance, with a manual override.
 - `src/GenerateBom.tsx` — board quantity/margin inputs, the grouped
   parts table, and the priced batch run (PDF + XLSX export).
+- `src/XlsxColumnsPanel.tsx` — checkbox + reorder UI for configuring
+  which columns appear in the XLSX export (persisted to
+  `~/.config/bom-app/xlsx_columns.json`).
+
+## Third-party assets
+
+The following files in `src-tauri/assets/interactive_bom/` are
+reproduced verbatim from
+[openscopeproject/InteractiveHtmlBom](https://github.com/openscopeproject/InteractiveHtmlBom)
+(MIT licence, © openscopeproject contributors):
+`ibom.html`, `ibom.css`, `ibom.js`, `util.js`, `render.js`,
+`table-util.js`, `split.js`, `pep.js`, `lz-string.js`.

@@ -26,7 +26,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::sexp::{self, Child, SexpNode};
+use crate::sexp::{Child, SexpNode};
 use crate::symbol_importer;
 
 /// One symbol placed on some sheet, deduplicated by reference — a
@@ -162,7 +162,7 @@ fn collect_from_file(
         ));
         return;
     };
-    let Ok(root) = sexp::parse(&text) else {
+    let Ok(root) = SexpNode::parse(&text) else {
         log(&format!(
             "  \u{26a0} Could not parse '{}' \u{2014} skipped.",
             path.display()
@@ -300,7 +300,7 @@ impl SchematicFile {
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, SchematicFileError> {
         let path = path.into();
         let source = fs::read_to_string(&path)?;
-        let symbols = scan_symbol_spans(&source);
+        let symbols = SchematicFile::scan_spans(&source);
         Ok(SchematicFile {
             path,
             source,
@@ -314,7 +314,7 @@ impl SchematicFile {
     /// `SymbolLibrary::get_symbol_node`.
     pub fn get_symbol_node(&self, uuid: &str) -> Option<SexpNode> {
         let span = self.symbols.iter().find(|s| s.uuid == uuid)?;
-        sexp::parse(&self.source[span.start..span.end]).ok()
+        SexpNode::parse(&self.source[span.start..span.end]).ok()
     }
 
     /// Queues `node` (already patched, e.g. via
@@ -325,7 +325,7 @@ impl SchematicFile {
         let Some(idx) = self.symbols.iter().position(|s| s.uuid == uuid) else {
             return false;
         };
-        self.replaced.insert(idx, sexp::render_at_indent(node, 1));
+        self.replaced.insert(idx, node.render_at_indent(1));
         true
     }
 
@@ -360,61 +360,63 @@ impl SchematicFile {
 /// string-skipping approach, adapted to key each span by its `uuid`
 /// instead of a leading name atom (schematic symbol instances have none
 /// to dedupe on the way `kicad_sym` symbols do).
-fn scan_symbol_spans(source: &str) -> Vec<SchSymbolSpan> {
-    let mut depth: i32 = 0;
-    let mut in_string = false;
-    let mut escape = false;
-    let mut current_start: Option<usize> = None;
-    let mut spans = Vec::new();
+impl SchematicFile {
+    fn scan_spans(source: &str) -> Vec<SchSymbolSpan> {
+        let mut depth: i32 = 0;
+        let mut in_string = false;
+        let mut escape = false;
+        let mut current_start: Option<usize> = None;
+        let mut spans = Vec::new();
 
-    for (idx, ch) in source.char_indices() {
-        if in_string {
-            if escape {
-                escape = false;
-            } else if ch == '\\' {
-                escape = true;
-            } else if ch == '"' {
-                in_string = false;
-            }
-            continue;
-        }
-        match ch {
-            '"' => in_string = true,
-            '(' => {
-                depth += 1;
-                if depth == 2 {
-                    current_start = Some(idx);
+        for (idx, ch) in source.char_indices() {
+            if in_string {
+                if escape {
+                    escape = false;
+                } else if ch == '\\' {
+                    escape = true;
+                } else if ch == '"' {
+                    in_string = false;
                 }
+                continue;
             }
-            ')' => {
-                if depth == 2 {
-                    if let Some(start) = current_start.take() {
-                        let end = idx + ch.len_utf8();
-                        let span_text = &source[start..end];
-                        if child_name(span_text) == "symbol" {
-                            if let Ok(node) = sexp::parse(span_text) {
-                                if let Some(uuid) =
-                                    node.find(&["uuid"]).and_then(|n| n.first_atom())
-                                {
-                                    spans.push(SchSymbolSpan {
-                                        uuid: uuid.text().to_string(),
-                                        start,
-                                        end,
-                                    });
+            match ch {
+                '"' => in_string = true,
+                '(' => {
+                    depth += 1;
+                    if depth == 2 {
+                        current_start = Some(idx);
+                    }
+                }
+                ')' => {
+                    if depth == 2 {
+                        if let Some(start) = current_start.take() {
+                            let end = idx + ch.len_utf8();
+                            let span_text = &source[start..end];
+                            if child_name(span_text) == "symbol" {
+                                if let Ok(node) = SexpNode::parse(span_text) {
+                                    if let Some(uuid) =
+                                        node.find(&["uuid"]).and_then(|n| n.first_atom())
+                                    {
+                                        spans.push(SchSymbolSpan {
+                                            uuid: uuid.text().to_string(),
+                                            start,
+                                            end,
+                                        });
+                                    }
                                 }
                             }
                         }
                     }
+                    depth -= 1;
+                    if depth < 0 {
+                        break;
+                    }
                 }
-                depth -= 1;
-                if depth < 0 {
-                    break;
-                }
+                _ => {}
             }
-            _ => {}
         }
+        spans
     }
-    spans
 }
 
 /// Given `"(name ...)"` (including the outer parens), extract just the

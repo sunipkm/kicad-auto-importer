@@ -15,9 +15,9 @@ use std::path::{Path, PathBuf};
 
 use crate::bom_report::{self, ReportRow};
 use crate::parts_lookup::{self, PartsCredentials};
-use kicad_auto_importer_core::schematic::SchematicFile;
-use kicad_auto_importer_core::sexp::SexpNode;
-use kicad_auto_importer_core::symbol_importer::{get_symbol_property, resolve_mpn, set_symbol_property};
+use kicad_parse::schematic::SchematicFile;
+use kicad_parse::sexp::SexpNode;
+use kicad_parse::symbol_importer::{get_symbol_property, resolve_mpn, set_symbol_property};
 
 /// Below this age, a part's `Last Checked` property is considered fresh
 /// enough to skip re-querying Mouser/DigiKey for — see `run_lookup_batch`.
@@ -406,14 +406,14 @@ mod tests {
     use super::*;
 
     fn node_with_last_checked(rfc3339: &str) -> SexpNode {
-        let mut node = kicad_auto_importer_core::sexp::parse(r#"(symbol (property "Reference" "R1"))"#).unwrap();
+        let mut node = SexpNode::parse(r#"(symbol (property "Reference" "R1"))"#).unwrap();
         set_symbol_property(&mut node, LAST_CHECKED_PROPERTY, rfc3339);
         node
     }
 
     #[test]
     fn last_checked_age_is_none_when_property_absent() {
-        let node = kicad_auto_importer_core::sexp::parse(r#"(symbol (property "Reference" "R1"))"#).unwrap();
+        let node = SexpNode::parse(r#"(symbol (property "Reference" "R1"))"#).unwrap();
         assert!(last_checked_age(&node, chrono::Utc::now()).is_none());
     }
 

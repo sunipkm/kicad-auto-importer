@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 
-// Mirrors `kicad_auto_importer_core::parts_lookup::{VendorOffer, VendorCandidate, ScoredCandidate}`.
+// Mirrors `kicad_parse::parts_lookup::{VendorOffer, VendorCandidate, ScoredCandidate}`.
 interface VendorOffer {
   seller: string;
   url: string;

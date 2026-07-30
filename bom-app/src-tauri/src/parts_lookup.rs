@@ -16,8 +16,8 @@
 use crate::digikey::{self, DigikeyCredentials, DigikeyError, DigikeyPart};
 use crate::mouser::{self, MouserCredentials, MouserError, MouserPart};
 use crate::parts_cache::PartsCache;
-use kicad_auto_importer_core::sexp::SexpNode;
-use kicad_auto_importer_core::symbol_importer::{get_symbol_property, set_symbol_property};
+use kicad_parse::sexp::SexpNode;
+use kicad_parse::symbol_importer::{get_symbol_property, set_symbol_property};
 
 /// A handful of the cheapest-to-priciest quantity breaks, packed into
 /// one string — see [`format_price_breaks`]. KiCad symbol properties
@@ -946,7 +946,7 @@ pub fn lookup_best_match(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kicad_auto_importer_core::sexp::Child;
+    use kicad_parse::sexp::Child;
 
     fn mouser_part(seller_suffix: &str) -> MouserPart {
         MouserPart {
@@ -1169,7 +1169,7 @@ mod tests {
             Some(Ok(digikey_part())),
         )
         .unwrap();
-        let mut node = kicad_auto_importer_core::sexp::parse(r#"(symbol "U1" (property "Reference" "U"))"#).unwrap();
+        let mut node = SexpNode::parse(r#"(symbol "U1" (property "Reference" "U"))"#).unwrap();
         apply_part_info(&mut node, &info);
 
         let prop_value = |key: &str| -> Option<String> {
@@ -1203,7 +1203,7 @@ mod tests {
         let mut mouser = mouser_part("a");
         mouser.suggested_replacement = "LM358PWR".to_string();
         let info = combine_results("LM358P", Some(Ok(mouser)), None).unwrap();
-        let mut node = kicad_auto_importer_core::sexp::parse(r#"(symbol "U1" (property "Reference" "U"))"#).unwrap();
+        let mut node = SexpNode::parse(r#"(symbol "U1" (property "Reference" "U"))"#).unwrap();
         apply_part_info(&mut node, &info);
 
         let has_replacement = node.find_all("property").into_iter().any(|p| {
@@ -1220,7 +1220,7 @@ mod tests {
         let mut mouser = mouser_part("a");
         mouser.price_breaks = vec![(1.0, 0.55), (10.0, 0.41), (100.0, 0.32)];
         let info = combine_results("LM358P", Some(Ok(mouser)), Some(Ok(digikey_part()))).unwrap();
-        let mut node = kicad_auto_importer_core::sexp::parse(r#"(symbol "U1" (property "Reference" "U"))"#).unwrap();
+        let mut node = SexpNode::parse(r#"(symbol "U1" (property "Reference" "U"))"#).unwrap();
         apply_part_info(&mut node, &info);
 
         let cached = read_cached_part_info(&node).unwrap();
@@ -1237,7 +1237,7 @@ mod tests {
 
     #[test]
     fn read_cached_part_info_is_none_when_never_looked_up() {
-        let node = kicad_auto_importer_core::sexp::parse(r#"(symbol "U1" (property "Reference" "U"))"#).unwrap();
+        let node = SexpNode::parse(r#"(symbol "U1" (property "Reference" "U"))"#).unwrap();
         assert!(read_cached_part_info(&node).is_none());
     }
 
@@ -1249,7 +1249,7 @@ mod tests {
         // miss (and do a fresh lookup) rather than a priceable-but-empty
         // hit, or it'd report "no priced offers available" for a full
         // 24h even though a real lookup would find prices.
-        let mut node = kicad_auto_importer_core::sexp::parse(r#"(symbol "U1" (property "Reference" "U"))"#).unwrap();
+        let mut node = SexpNode::parse(r#"(symbol "U1" (property "Reference" "U"))"#).unwrap();
         set_symbol_property(&mut node, "Mfr", "Texas Instruments");
         set_symbol_property(&mut node, "Mfr #", "LM358P");
         set_symbol_property(&mut node, "Mouser", "https://mouser.com/lm358p");
@@ -1364,7 +1364,7 @@ mod tests {
     #[test]
     fn apply_part_info_writes_a_vendor_description_property() {
         let info = combine_results("LM358P", Some(Ok(mouser_part("a"))), None).unwrap();
-        let mut node = kicad_auto_importer_core::sexp::parse(r#"(symbol "U1" (property "Reference" "U"))"#).unwrap();
+        let mut node = SexpNode::parse(r#"(symbol "U1" (property "Reference" "U"))"#).unwrap();
         apply_part_info(&mut node, &info);
 
         let has_description = node.find_all("property").into_iter().any(|p| {
@@ -1379,7 +1379,7 @@ mod tests {
         let mut mouser = mouser_part("a");
         mouser.description = String::new();
         let info = combine_results("LM358P", Some(Ok(mouser)), None).unwrap();
-        let mut node = kicad_auto_importer_core::sexp::parse(r#"(symbol "U1" (property "Reference" "U"))"#).unwrap();
+        let mut node = SexpNode::parse(r#"(symbol "U1" (property "Reference" "U"))"#).unwrap();
         apply_part_info(&mut node, &info);
 
         let has_description = node

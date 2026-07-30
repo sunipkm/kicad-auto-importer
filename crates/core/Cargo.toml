@@ -1,5 +1,5 @@
 [package]
-name = "kicad-auto-importer-core"
+name = "kicad-parse"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

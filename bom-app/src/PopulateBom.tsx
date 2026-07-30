@@ -34,7 +34,7 @@ interface PartsCredentials {
 }
 
 // Mirrors `PopulateBomEvent` (`src-tauri/src/lib.rs`), which is itself a
-// JSON-serializable copy of `kicad_auto_importer_core::populate_bom::LookupEvent`.
+// JSON-serializable copy of `kicad_parse::populate_bom::LookupEvent`.
 type PopulateBomEvent =
   | { kind: "Log"; message: string }
   | { kind: "CurrentItem"; reference: string }

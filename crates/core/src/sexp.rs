@@ -117,6 +117,28 @@ impl SexpNode {
             _ => None,
         })
     }
+
+    /// Parse a complete KiCad S-expression; returns the root node.
+    pub fn parse(text: &str) -> Result<Self, SexpError> {
+        let tokens = tokenize(text);
+        let mut pos = 0usize;
+        match parse_expr(&tokens, &mut pos)? {
+            Parsed::Node(n) => Ok(n),
+            Parsed::Atom(_) => Err(SexpError::ExpectedNode),
+        }
+    }
+
+    /// Render back to a KiCad-style S-expression string.
+    pub fn render(&self) -> String {
+        render_indent(self, 0)
+    }
+
+    /// Render as if nested `indent` levels deep — every line except the
+    /// first carries its absolute indentation. Used when splicing a
+    /// rendered subtree back into a larger file's raw text.
+    pub fn render_at_indent(&self, indent: usize) -> String {
+        render_indent(self, indent)
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -234,16 +256,6 @@ fn parse_expr(tokens: &[Token], pos: &mut usize) -> Result<Parsed, SexpError> {
             *pos += 1;
             Ok(Parsed::Atom(unquote(s)))
         }
-    }
-}
-
-/// Parse a complete KiCad S-expression file; returns the root node.
-pub fn parse(text: &str) -> Result<SexpNode, SexpError> {
-    let tokens = tokenize(text);
-    let mut pos = 0usize;
-    match parse_expr(&tokens, &mut pos)? {
-        Parsed::Node(n) => Ok(n),
-        Parsed::Atom(_) => Err(SexpError::ExpectedNode),
     }
 }
 
@@ -401,23 +413,6 @@ fn render_indent(node: &SexpNode, indent: usize) -> String {
     format!("({})", lines.join("\n"))
 }
 
-/// Render a SexpNode back to a KiCad-style S-expression string.
-pub fn render(node: &SexpNode) -> String {
-    render_indent(node, 0)
-}
-
-/// Render a SexpNode as if it were nested `indent` levels deep inside
-/// some enclosing file — every line except the first gets the matching
-/// absolute indentation baked in. Used when splicing a rendered subtree
-/// (e.g. one symbol) back into a larger file's raw text: the caller is
-/// responsible for indenting the first line itself (mirroring how
-/// `render_indent`'s own nested-node case only prepends indentation to
-/// a child's first line, since the child's remaining lines already
-/// carry correct indentation from the recursive `indent` parameter).
-pub fn render_at_indent(node: &SexpNode, indent: usize) -> String {
-    render_indent(node, indent)
-}
-
 #[allow(dead_code)]
 fn known_bareword_atoms() -> HashSet<&'static str> {
     known_bareword_fields("justify")
@@ -452,8 +447,8 @@ mod tests {
     #[test]
     fn roundtrips_quoted_numeric_property_value() {
         let text = r#"(property "Height" "1.04" (at 24.13 -394.92 0))"#;
-        let parsed = parse(text).unwrap();
-        let rendered = render(&parsed);
+        let parsed = SexpNode::parse(text).unwrap();
+        let rendered = SexpNode::render(&parsed);
         assert!(
             rendered.contains(r#""Height" "1.04""#),
             "value must stay quoted even though it looks like a plain number: {rendered}"
@@ -463,8 +458,8 @@ mod tests {
     #[test]
     fn roundtrips_quoted_numeric_pin_number() {
         let text = r#"(number "7" (effects (font (size 1.27 1.27))))"#;
-        let parsed = parse(text).unwrap();
-        let rendered = render(&parsed);
+        let parsed = SexpNode::parse(text).unwrap();
+        let rendered = SexpNode::render(&parsed);
         assert!(
             rendered.starts_with("(number \"7\""),
             "pin number must stay quoted even though it's purely numeric: {rendered}"
@@ -474,16 +469,16 @@ mod tests {
     #[test]
     fn roundtrips_bareword_justify_and_type_keywords() {
         let text = "(effects (font (size 1.27 1.27)) (justify left top))";
-        let parsed = parse(text).unwrap();
-        let rendered = render(&parsed);
+        let parsed = SexpNode::parse(text).unwrap();
+        let rendered = SexpNode::render(&parsed);
         assert!(
             rendered.contains("(justify left top)"),
             "justify keywords must stay bare: {rendered}"
         );
 
         let text2 = "(stroke (width 0.254) (type default))";
-        let parsed2 = parse(text2).unwrap();
-        let rendered2 = render(&parsed2);
+        let parsed2 = SexpNode::parse(text2).unwrap();
+        let rendered2 = SexpNode::render(&parsed2);
         assert!(
             rendered2.contains("(type default)"),
             "stroke type keyword must stay bare: {rendered2}"
@@ -493,15 +488,15 @@ mod tests {
     #[test]
     fn roundtrips_bareword_pad_property_flag() {
         let text = "(property pad_prop_castellated)";
-        let parsed = parse(text).unwrap();
-        assert_eq!(render(&parsed), text);
+        let parsed = SexpNode::parse(text).unwrap();
+        assert_eq!(SexpNode::render(&parsed), text);
     }
 
     #[test]
     fn roundtrips_bareword_name_quoted_value_ki_fp_filters() {
         let text = r#"(property ki_fp_filters "Connector*:*_1x??-1MP*")"#;
-        let parsed = parse(text).unwrap();
-        assert_eq!(render(&parsed), text);
+        let parsed = SexpNode::parse(text).unwrap();
+        assert_eq!(SexpNode::render(&parsed), text);
     }
 
     #[test]
@@ -513,7 +508,7 @@ mod tests {
             "property",
             &[Atom::Quoted("Height".into()), Atom::Bare("1.04".into())],
         );
-        assert_eq!(render(&node), r#"(property "Height" "1.04")"#);
+        assert_eq!(SexpNode::render(&node), r#"(property "Height" "1.04")"#);
     }
 
     #[test]
@@ -523,7 +518,7 @@ mod tests {
         // numeric regex simply never matches them — this test guards
         // against a future accidental broadening of that rule).
         let flag = atoms_only("property", &[Atom::Bare("pad_prop_castellated".into())]);
-        assert_eq!(render(&flag), "(property pad_prop_castellated)");
+        assert_eq!(SexpNode::render(&flag), "(property pad_prop_castellated)");
 
         let filters = atoms_only(
             "property",
@@ -532,20 +527,20 @@ mod tests {
                 Atom::Quoted("R_*".into()),
             ],
         );
-        assert_eq!(render(&filters), r#"(property ki_fp_filters "R_*")"#);
+        assert_eq!(SexpNode::render(&filters), r#"(property ki_fp_filters "R_*")"#);
     }
 
     #[test]
     fn lib_table_version_stays_bare() {
         let mut root = SexpNode::new("sym_lib_table");
         root.push_node(SexpNode::leaf("version", Atom::bare("7")));
-        assert_eq!(render(&root), "(sym_lib_table\n  (version 7))");
+        assert_eq!(SexpNode::render(&root), "(sym_lib_table\n  (version 7))");
     }
 
     #[test]
     fn full_lib_entry_roundtrip() {
         let text = "(sym_lib_table\n  (version 7)\n\n  (lib\n    (name \"Chickadee_Stamp_v2\")\n\n    (type \"KiCad\")\n\n    (uri \"${KIPRJMOD}/chickadee-stamp-v3.pretty\")\n\n    (options \"\")\n\n    (descr \"\")))";
-        let parsed = parse(text).unwrap();
+        let parsed = SexpNode::parse(text).unwrap();
         // Re-rendering won't reproduce the original file's blank lines
         // (those are just whitespace between tokens, discarded like any
         // other whitespace) — verify structural content survives instead.

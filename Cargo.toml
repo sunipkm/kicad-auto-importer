@@ -16,4 +16,4 @@ authors = ["Sunip K. Mukherjee <sunipkmukherjee@gmail.com>"]
 # with the crate's own `version.workspace = true` instead of duplicating
 # the literal "0.0.1" by hand in `crates/app/Cargo.toml`.
 [workspace.dependencies]
-kicad-auto-importer-core = { path = "crates/core", version = "0.0.1" }
+kicad-parse = { path = "crates/core", version = "0.0.1" }

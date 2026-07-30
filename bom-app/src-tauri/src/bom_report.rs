@@ -29,9 +29,67 @@ use std::path::Path;
 use printpdf::path::PaintMode;
 use printpdf::{BuiltinFont, Color, Mm, PdfLayerReference, Rect, Rgb};
 use rust_xlsxwriter::{Color as XlsxColor, Format as XlsxFormat, Workbook};
+use serde::{Deserialize, Serialize};
 
 use crate::bom_pricing;
 use crate::parts_lookup::PartInfo;
+
+/// A column that can appear in the priced XLSX export.
+///
+/// Mandatory columns (Part, References, NeededQty) are always included;
+/// optional columns can be toggled and reordered via [`crate::xlsx_columns::XlsxColumnsConfig`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum XlsxColumn {
+    Part,
+    References,
+    NeededQty,
+    PurchaseQty,
+    Vendor,
+    UnitPrice,
+    TotalPrice,
+    InStock,
+    StockQty,
+    StockShortfall,
+    LifecycleConcern,
+}
+
+impl XlsxColumn {
+    /// Default column set in default display order — matches the original fixed layout.
+    pub const ALL: &'static [Self] = &[
+        Self::Part,
+        Self::References,
+        Self::NeededQty,
+        Self::PurchaseQty,
+        Self::Vendor,
+        Self::UnitPrice,
+        Self::TotalPrice,
+        Self::InStock,
+        Self::StockQty,
+        Self::StockShortfall,
+        Self::LifecycleConcern,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Part => "Part",
+            Self::References => "References",
+            Self::NeededQty => "Need",
+            Self::PurchaseQty => "Buy",
+            Self::Vendor => "Vendor",
+            Self::UnitPrice => "Unit Price",
+            Self::TotalPrice => "Ext Price",
+            Self::InStock => "In Stock",
+            Self::StockQty => "Stock Qty",
+            Self::StockShortfall => "Stock Shortfall",
+            Self::LifecycleConcern => "Lifecycle Concern",
+        }
+    }
+
+    /// Mandatory columns are always visible and cannot be hidden.
+    pub fn is_mandatory(self) -> bool {
+        matches!(self, Self::Part | Self::References | Self::NeededQty)
+    }
+}
 
 /// One row of the report: a placed symbol plus whatever the lookup
 /// found (or the error it failed with).
@@ -844,6 +902,7 @@ pub fn generate_priced_bom(
 pub fn generate_priced_bom_xlsx(
     rows: &[bom_pricing::PricedRow],
     board_qty: u32,
+    columns: &[XlsxColumn],
     out_path: &Path,
 ) -> Result<(), ReportError> {
     let mut workbook = Workbook::new();
@@ -863,65 +922,92 @@ pub fn generate_priced_bom_xlsx(
     let bold_format = XlsxFormat::new().set_bold();
     let bold_money_format = XlsxFormat::new().set_bold().set_num_format("$0.00");
 
-    const HEADERS: [&str; 11] = [
-        "Part",
-        "References",
-        "Need",
-        "Buy",
-        "Vendor",
-        "Unit Price",
-        "Ext Price",
-        "In Stock",
-        "Stock Qty",
-        "Stock Shortfall",
-        "Lifecycle Concern",
-    ];
-    for (col, header) in HEADERS.iter().enumerate() {
-        sheet.write_with_format(0, col as u16, *header, &header_format)?;
+    for (col, xcol) in columns.iter().enumerate() {
+        sheet.write_with_format(0, col as u16, xcol.label(), &header_format)?;
     }
 
     let mut grand_total = 0.0f64;
     let mut row_idx: u32 = 1;
     for row in rows {
-        let text_fmt = if priced_row_needs_attention(row) {
-            &flagged_format
-        } else {
-            &normal_format
-        };
-        let money_fmt = if priced_row_needs_attention(row) {
-            &flagged_money_format
-        } else {
-            &money_format
-        };
+        let text_fmt = if priced_row_needs_attention(row) { &flagged_format } else { &normal_format };
+        let money_fmt = if priced_row_needs_attention(row) { &flagged_money_format } else { &money_format };
 
-        let part = priced_part_label(row);
-        let references = row.group.references.join(", ");
-        sheet.write_with_format(row_idx, 0, &part, text_fmt)?;
-        sheet.write_with_format(row_idx, 1, &references, text_fmt)?;
-        sheet.write_with_format(row_idx, 2, row.needed_qty, text_fmt)?;
+        if let Ok(ch) = &row.outcome {
+            grand_total += ch.total_price;
+        }
 
-        match &row.outcome {
-            Ok(chosen) => {
-                grand_total += chosen.total_price;
-                let shortfall = chosen.stock_quantity < u64::from(chosen.purchase_qty);
-                sheet.write_with_format(row_idx, 3, chosen.purchase_qty, text_fmt)?;
-                sheet.write_with_format(row_idx, 4, &chosen.seller, text_fmt)?;
-                sheet.write_with_format(row_idx, 5, chosen.unit_price, money_fmt)?;
-                sheet.write_with_format(row_idx, 6, chosen.total_price, money_fmt)?;
-                sheet.write_with_format(row_idx, 7, chosen.in_stock, text_fmt)?;
-                sheet.write_with_format(row_idx, 8, chosen.stock_quantity, text_fmt)?;
-                sheet.write_with_format(row_idx, 9, shortfall, text_fmt)?;
-                sheet.write_with_format(row_idx, 10, chosen.lifecycle_concern, text_fmt)?;
-            }
-            Err(msg) => {
-                sheet.write_with_format(row_idx, 10, format!("LOOKUP FAILED: {msg}"), text_fmt)?;
+        for (col, &xcol) in columns.iter().enumerate() {
+            let c = col as u16;
+            match xcol {
+                XlsxColumn::Part => {
+                    let v = priced_part_label(row);
+                    sheet.write_with_format(row_idx, c, &v, text_fmt)?;
+                }
+                XlsxColumn::References => {
+                    let v = row.group.references.join(", ");
+                    sheet.write_with_format(row_idx, c, &v, text_fmt)?;
+                }
+                XlsxColumn::NeededQty => {
+                    sheet.write_with_format(row_idx, c, row.needed_qty, text_fmt)?;
+                }
+                XlsxColumn::PurchaseQty => {
+                    if let Ok(ch) = &row.outcome {
+                        sheet.write_with_format(row_idx, c, ch.purchase_qty, text_fmt)?;
+                    }
+                }
+                XlsxColumn::Vendor => {
+                    if let Ok(ch) = &row.outcome {
+                        sheet.write_with_format(row_idx, c, &ch.seller, text_fmt)?;
+                    }
+                }
+                XlsxColumn::UnitPrice => {
+                    if let Ok(ch) = &row.outcome {
+                        sheet.write_with_format(row_idx, c, ch.unit_price, money_fmt)?;
+                    }
+                }
+                XlsxColumn::TotalPrice => {
+                    if let Ok(ch) = &row.outcome {
+                        sheet.write_with_format(row_idx, c, ch.total_price, money_fmt)?;
+                    }
+                }
+                XlsxColumn::InStock => {
+                    if let Ok(ch) = &row.outcome {
+                        sheet.write_with_format(row_idx, c, ch.in_stock, text_fmt)?;
+                    }
+                }
+                XlsxColumn::StockQty => {
+                    if let Ok(ch) = &row.outcome {
+                        sheet.write_with_format(row_idx, c, ch.stock_quantity, text_fmt)?;
+                    }
+                }
+                XlsxColumn::StockShortfall => {
+                    if let Ok(ch) = &row.outcome {
+                        let sf = ch.stock_quantity < u64::from(ch.purchase_qty);
+                        sheet.write_with_format(row_idx, c, sf, text_fmt)?;
+                    }
+                }
+                XlsxColumn::LifecycleConcern => match &row.outcome {
+                    Ok(ch) => {
+                        sheet.write_with_format(row_idx, c, ch.lifecycle_concern, text_fmt)?;
+                    }
+                    Err(msg) => {
+                        sheet.write_with_format(
+                            row_idx,
+                            c,
+                            format!("LOOKUP FAILED: {msg}"),
+                            text_fmt,
+                        )?;
+                    }
+                },
             }
         }
         row_idx += 1;
     }
 
     sheet.write_with_format(row_idx, 0, "Total", &bold_format)?;
-    sheet.write_with_format(row_idx, 6, grand_total, &bold_money_format)?;
+    if let Some(total_col) = columns.iter().position(|&c| c == XlsxColumn::TotalPrice) {
+        sheet.write_with_format(row_idx, total_col as u16, grand_total, &bold_money_format)?;
+    }
     row_idx += 1;
     sheet.write_with_format(row_idx, 0, "Board quantity", &bold_format)?;
     sheet.write_with_format(row_idx, 1, board_qty, &normal_format)?;
@@ -1281,7 +1367,7 @@ mod tests {
             priced_ok_row("RC0603FR", &["R1"]),     // 1 * $0.10 = $0.10
             priced_failed_row("UNKNOWN123", &["U9"]),
         ];
-        generate_priced_bom_xlsx(&rows, 5, &out_path).unwrap();
+        generate_priced_bom_xlsx(&rows, 5, XlsxColumn::ALL, &out_path).unwrap();
 
         let range = open_priced_sheet(&out_path);
         assert_eq!(range.get_value((0, 0)).unwrap().get_string(), Some("Part"));
@@ -1314,7 +1400,7 @@ mod tests {
             chosen.purchase_qty = 10;
             chosen.stock_quantity = 3;
         }
-        generate_priced_bom_xlsx(&[row], 1, &out_path).unwrap();
+        generate_priced_bom_xlsx(&[row], 1, XlsxColumn::ALL, &out_path).unwrap();
 
         let range = open_priced_sheet(&out_path);
         assert_eq!(range.get_value((1, 8)).unwrap().get_float(), Some(3.0));
@@ -1325,7 +1411,7 @@ mod tests {
     fn xlsx_creates_missing_parent_directories() {
         let dir = tempdir().unwrap();
         let out_path = dir.path().join("nested").join("dir").join("priced.xlsx");
-        generate_priced_bom_xlsx(&[], 1, &out_path).unwrap();
+        generate_priced_bom_xlsx(&[], 1, XlsxColumn::ALL, &out_path).unwrap();
         assert!(out_path.is_file());
     }
 }

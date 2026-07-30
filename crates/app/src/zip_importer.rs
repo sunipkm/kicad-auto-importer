@@ -23,9 +23,9 @@ use walkdir::WalkDir;
 
 use crate::footprint_importer::FootprintImporter;
 use crate::model_importer::ModelImporter;
-use kicad_auto_importer_core::kicad_paths::register_project_library;
-use kicad_auto_importer_core::sexp::{self, Child};
-use kicad_auto_importer_core::symbol_importer::{
+use kicad_parse::kicad_paths::register_project_library;
+use kicad_parse::sexp::{Child, SexpError, SexpNode};
+use kicad_parse::symbol_importer::{
     is_top_level_symbol_name, patch_symbol_footprint, SymbolLibrary,
 };
 
@@ -52,11 +52,11 @@ pub enum ImportError {
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
     #[error("symbol library error: {0}")]
-    SymbolLibrary(#[from] kicad_auto_importer_core::symbol_importer::SymbolLibraryError),
+    SymbolLibrary(#[from] kicad_parse::symbol_importer::SymbolLibraryError),
     #[error("could not parse source symbol file '{path}': {source}")]
     SourceSexp {
         path: PathBuf,
-        source: sexp::SexpError,
+        source: SexpError,
     },
     #[error("zip error: {0}")]
     Zip(#[from] zip::result::ZipError),
@@ -230,7 +230,7 @@ pub fn import_from_directory(
         let mut lib = SymbolLibrary::open_or_create(&settings.symbol_lib)?;
         for sym_path in &sym_files {
             let text = fs::read_to_string(sym_path)?;
-            let root_node = sexp::parse(&text).map_err(|source| ImportError::SourceSexp {
+            let root_node = SexpNode::parse(&text).map_err(|source| ImportError::SourceSexp {
                 path: sym_path.clone(),
                 source,
             })?;

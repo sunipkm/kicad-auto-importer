@@ -1,4 +1,4 @@
-//! Groups placed schematic symbols (`kicad_auto_importer_core::schematic::PlacedSymbol`)
+//! Groups placed schematic symbols (`kicad_parse::schematic::PlacedSymbol`)
 //! into unique purchasable parts and works out what an actual order
 //! would cost — the "Generate BOM" feature, distinct from "Populate
 //! BOM" (`part_lookup_ui`/`bom_report`'s per-reference stock/lifecycle
@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::parts_lookup::{cheapest_purchase, PartInfo, StockStatus};
-use kicad_auto_importer_core::schematic::PlacedSymbol;
+use kicad_parse::schematic::PlacedSymbol;
 
 /// One unique purchasable part, with every reference designator that
 /// needs one.

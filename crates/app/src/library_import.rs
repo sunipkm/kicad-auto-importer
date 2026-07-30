@@ -22,11 +22,9 @@ use walkdir::WalkDir;
 use crate::footprint_importer::{model_path_re, FootprintImporter};
 use crate::model_importer::ModelImporter;
 use crate::zip_importer::resolve_model_dir;
-use kicad_auto_importer_core::kicad_paths::{
-    self, expand_kicad_vars, load_project_local_table, register_project_library, LibEntry,
-};
-use kicad_auto_importer_core::sexp::{Child, SexpNode};
-use kicad_auto_importer_core::symbol_importer::{
+use kicad_parse::kicad_paths::{self, expand_kicad_vars, register_project_library, LibEntry};
+use kicad_parse::sexp::{Child, SexpNode};
+use kicad_parse::symbol_importer::{
     extract_footprint_ref, is_top_level_symbol_name, patch_symbol_footprint, SymbolLibrary,
 };
 
@@ -79,7 +77,7 @@ pub fn load_project_symbols(
     mut log: impl FnMut(&str),
 ) -> Vec<SourceSymbol> {
     let mut rows = Vec::new();
-    for entry in load_project_local_table(source_project_dir, "sym-lib-table") {
+    for entry in LibEntry::from_project(source_project_dir, "sym-lib-table") {
         let sym_lib_path = PathBuf::from(&entry.uri);
         if !sym_lib_path.is_file() {
             log(&format!(
@@ -224,11 +222,11 @@ fn count_units(sym_name: &str, node: &SexpNode) -> usize {
 pub fn load_combined_fp_table(source_project_dir: &Path) -> HashMap<String, LibEntry> {
     let mut table = HashMap::new();
     if let Some(global_path) = kicad_paths::find_global_lib_table("fp-lib-table") {
-        for entry in kicad_paths::parse_lib_table(&global_path, None) {
+        for entry in LibEntry::from_table(&global_path, None) {
             table.insert(entry.name.clone(), entry);
         }
     }
-    for entry in load_project_local_table(source_project_dir, "fp-lib-table") {
+    for entry in LibEntry::from_project(source_project_dir, "fp-lib-table") {
         table.insert(entry.name.clone(), entry);
     }
     table

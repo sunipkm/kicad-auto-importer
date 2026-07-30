@@ -7,7 +7,7 @@
 //!
 //! Lives under `~/.config/kicad-auto-importer/settings.json` (per-OS
 //! equivalent of `dirs::config_dir()`). Deliberately app-local rather
-//! than in `kicad-auto-importer-core`: the companion `bom-app` has its
+//! than in `kicad-parse`: the companion `bom-app` has its
 //! own, entirely disjoint global settings (Mouser/DigiKey API
 //! credentials) and its own settings file, so there's nothing left for
 //! the two apps to actually share here.

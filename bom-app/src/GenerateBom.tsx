@@ -18,7 +18,7 @@ interface PartsCredentials {
   digikey_client_secret: string;
 }
 
-// Mirrors `kicad_auto_importer_core::bom_pricing::ChosenOffer`.
+// Mirrors `kicad_parse::bom_pricing::ChosenOffer`.
 interface ChosenOffer {
   seller: string;
   manufacturer: string;
@@ -33,7 +33,7 @@ interface ChosenOffer {
 }
 
 // Mirrors `GenerateBomEvent` (`src-tauri/src/lib.rs`), a JSON copy of
-// `kicad_auto_importer_core::generate_bom::BomEvent`.
+// `kicad_parse::generate_bom::BomEvent`.
 type GenerateBomEvent =
   | { kind: "Log"; message: string }
   | { kind: "CurrentItem"; display_name: string }
@@ -43,7 +43,8 @@ type GenerateBomEvent =
       needed_qty: number;
       outcome: { Ok: ChosenOffer } | { Err: string };
     }
-  | { kind: "Done"; grand_total: number };
+  | { kind: "Done"; grand_total: number }
+  | { kind: "InteractiveBomReady"; available: boolean };
 
 interface RowOutcome {
   neededQty: number;
@@ -90,6 +91,7 @@ export function GenerateBom({ projectDir }: { projectDir: string }) {
   const [progressTotal, setProgressTotal] = useState(0);
   const [currentItem, setCurrentItem] = useState("");
   const [grandTotal, setGrandTotal] = useState<number | null>(null);
+  const [ibomAvailable, setIbomAvailable] = useState(false);
 
   async function loadGroups() {
     if (!projectDir) return;
@@ -100,6 +102,7 @@ export function GenerateBom({ projectDir }: { projectDir: string }) {
     setProgressTotal(0);
     setCurrentItem("");
     setGrandTotal(null);
+    setIbomAvailable(false);
     setLogLines([
       `Found ${loaded.length} unique part(s) across ${loaded.reduce((n, g) => n + g.references.length, 0)} placed symbol(s).`,
     ]);
@@ -186,9 +189,12 @@ export function GenerateBom({ projectDir }: { projectDir: string }) {
             });
             break;
           case "Done":
+            setGrandTotal(payload.grand_total);
+            break;
+          case "InteractiveBomReady":
             setInProgress(false);
             setCurrentItem("");
-            setGrandTotal(payload.grand_total);
+            setIbomAvailable(payload.available);
             unlisten();
             break;
         }
@@ -327,6 +333,15 @@ export function GenerateBom({ projectDir }: { projectDir: string }) {
         <button type="button" className="btn btn-primary" onClick={generate} disabled={inProgress}>
           {inProgress ? "Pricing…" : "Generate BOM"}
         </button>
+        {ibomAvailable && (
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={() => invoke("open_interactive_bom")}
+          >
+            View Interactive BOM ↗
+          </button>
+        )}
       </div>
     </section>
   );

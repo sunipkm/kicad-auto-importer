@@ -20,7 +20,7 @@ use std::sync::OnceLock;
 
 use regex::Regex;
 
-use kicad_auto_importer_core::kicad_paths::kiprjmod_relative_uri;
+use kicad_parse::kicad_paths::kiprjmod_relative_uri;
 
 pub(crate) fn model_path_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();

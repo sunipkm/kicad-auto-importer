@@ -637,7 +637,7 @@ dependencies = [
  "calamine",
  "chrono",
  "dirs",
- "kicad-auto-importer-core",
+ "kicad-parse",
  "printpdf",
  "rust_xlsxwriter",
  "serde",
@@ -3130,7 +3130,7 @@ dependencies = [
  "gtk",
  "image",
  "interprocess",
- "kicad-auto-importer-core",
+ "kicad-parse",
  "notify",
  "regex",
  "rfd 0.15.4",
@@ -3146,7 +3146,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "kicad-auto-importer-core"
+name = "kicad-parse"
 version = "0.0.1"
 dependencies = [
  "dirs",

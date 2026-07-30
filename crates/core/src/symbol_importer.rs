@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
-use crate::sexp::{self, Atom, Child, SexpNode};
+use crate::sexp::{Atom, Child, SexpNode};
 
 const EMPTY_LIB: &str =
     "(kicad_symbol_lib\n  (version 20231120)\n  (generator kicad_auto_importer)\n)\n";
@@ -72,7 +72,7 @@ impl SymbolLibrary {
     }
 
     fn from_source(path: PathBuf, source: String) -> Result<Self, SymbolLibraryError> {
-        let (children, insert_offset) = scan_top_level(&source)?;
+        let (children, insert_offset) = Self::scan_top_level(&source)?;
         let symbols = children
             .into_iter()
             .filter(|c| c.name == "symbol")
@@ -106,7 +106,7 @@ impl SymbolLibrary {
     /// so this re-parses only that one symbol's byte span on demand.
     pub fn get_symbol_node(&self, name: &str) -> Option<SexpNode> {
         let span = self.symbols.iter().find(|s| s.name == name)?;
-        sexp::parse(&self.source[span.start..span.end]).ok()
+        SexpNode::parse(&self.source[span.start..span.end]).ok()
     }
 
     /// Adds a symbol whose subtree is `node` (already patched, e.g. via
@@ -117,7 +117,7 @@ impl SymbolLibrary {
         // `kicad_symbol_lib`, matching every other top-level symbol);
         // the caller-side splice logic supplies the first line's
         // leading indentation itself (see `save()`).
-        let rendered = sexp::render_at_indent(node, 1);
+        let rendered = node.render_at_indent(1);
 
         if let Some(idx) = self.symbols.iter().position(|s| s.name == name) {
             if !overwrite {
@@ -168,58 +168,60 @@ struct TopLevelChild {
 /// tracking each direct child's byte span and (name, first-atom) —
 /// never building a nested tree for a child's internals. Correctly
 /// skips parens that appear inside quoted strings.
-fn scan_top_level(source: &str) -> Result<(Vec<TopLevelChild>, usize), SymbolLibraryError> {
-    let mut depth: i32 = 0;
-    let mut in_string = false;
-    let mut escape = false;
-    let mut current_child_start: Option<usize> = None;
-    let mut children = Vec::new();
-    let mut root_close: Option<usize> = None;
+impl SymbolLibrary {
+    fn scan_top_level(source: &str) -> Result<(Vec<TopLevelChild>, usize), SymbolLibraryError> {
+        let mut depth: i32 = 0;
+        let mut in_string = false;
+        let mut escape = false;
+        let mut current_child_start: Option<usize> = None;
+        let mut children = Vec::new();
+        let mut root_close: Option<usize> = None;
 
-    for (idx, ch) in source.char_indices() {
-        if in_string {
-            if escape {
-                escape = false;
-            } else if ch == '\\' {
-                escape = true;
-            } else if ch == '"' {
-                in_string = false;
-            }
-            continue;
-        }
-        match ch {
-            '"' => in_string = true,
-            '(' => {
-                depth += 1;
-                if depth == 2 {
-                    current_child_start = Some(idx);
+        for (idx, ch) in source.char_indices() {
+            if in_string {
+                if escape {
+                    escape = false;
+                } else if ch == '\\' {
+                    escape = true;
+                } else if ch == '"' {
+                    in_string = false;
                 }
+                continue;
             }
-            ')' => {
-                if depth == 2 {
-                    if let Some(start) = current_child_start.take() {
-                        let end = idx + ch.len_utf8();
-                        let (name, first_atom) = peek_child_head(&source[start..end]);
-                        children.push(TopLevelChild {
-                            start,
-                            end,
-                            name,
-                            first_atom,
-                        });
+            match ch {
+                '"' => in_string = true,
+                '(' => {
+                    depth += 1;
+                    if depth == 2 {
+                        current_child_start = Some(idx);
                     }
                 }
-                depth -= 1;
-                if depth == 0 {
-                    root_close = Some(idx);
-                    break;
+                ')' => {
+                    if depth == 2 {
+                        if let Some(start) = current_child_start.take() {
+                            let end = idx + ch.len_utf8();
+                            let (name, first_atom) = peek_child_head(&source[start..end]);
+                            children.push(TopLevelChild {
+                                start,
+                                end,
+                                name,
+                                first_atom,
+                            });
+                        }
+                    }
+                    depth -= 1;
+                    if depth == 0 {
+                        root_close = Some(idx);
+                        break;
+                    }
                 }
+                _ => {}
             }
-            _ => {}
         }
-    }
 
-    let root_close = root_close.ok_or(SymbolLibraryError::Malformed)?;
-    Ok((children, root_close))
+        let root_close = root_close.ok_or(SymbolLibraryError::Malformed)?;
+        Ok((children, root_close))
+    }
 }
 
 /// Given `text` spanning exactly one top-level child (`"(name atom
@@ -492,7 +494,7 @@ mod tests {
         let text = format!(
             r#"(symbol "{name}" (property "Reference" "U") (property "Footprint" "{footprint}" (at 0 0 0)))"#
         );
-        sexp::parse(&text).unwrap()
+        SexpNode::parse(&text).unwrap()
     }
 
     fn prop_value(node: &SexpNode, key: &str) -> Option<String> {
@@ -598,7 +600,7 @@ mod tests {
         let text = r#"(symbol "Widget"
             (property "Reference" "U")
             (symbol "Widget_1_1" (property "Footprint" "Sub:FP" (at 0 0 0))))"#;
-        let mut node = sexp::parse(text).unwrap();
+        let mut node = SexpNode::parse(text).unwrap();
 
         set_symbol_property(&mut node, "Mfr", "Texas Instruments");
 
@@ -618,13 +620,13 @@ mod tests {
 
     #[test]
     fn resolve_mpn_falls_back_to_symbol_name_when_no_candidate_property() {
-        let node = sexp::parse(r#"(symbol "LM358" (property "Reference" "U"))"#).unwrap();
+        let node = SexpNode::parse(r#"(symbol "LM358" (property "Reference" "U"))"#).unwrap();
         assert_eq!(resolve_mpn(&node, "LM358"), "LM358");
     }
 
     #[test]
     fn resolve_mpn_prefers_an_existing_mpn_property() {
-        let node = sexp::parse(
+        let node = SexpNode::parse(
             r#"(symbol "U1" (property "Reference" "U") (property "MPN" "LM358DR"))"#,
         )
         .unwrap();
@@ -634,14 +636,14 @@ mod tests {
     #[test]
     fn resolve_mpn_candidate_matching_is_case_insensitive() {
         let node =
-            sexp::parse(r#"(symbol "U1" (property "manufacturer part number" "LM358DR"))"#)
+            SexpNode::parse(r#"(symbol "U1" (property "manufacturer part number" "LM358DR"))"#)
                 .unwrap();
         assert_eq!(resolve_mpn(&node, "U1"), "LM358DR");
     }
 
     #[test]
     fn resolve_mpn_ignores_a_blank_candidate_property() {
-        let node = sexp::parse(r#"(symbol "LM358" (property "MPN" ""))"#).unwrap();
+        let node = SexpNode::parse(r#"(symbol "LM358" (property "MPN" ""))"#).unwrap();
         assert_eq!(resolve_mpn(&node, "LM358"), "LM358");
     }
 
@@ -679,7 +681,7 @@ mod tests {
 
         let after_first_save = fs::read_to_string(&path).unwrap();
         let first_span_text = {
-            let (children, _) = scan_top_level(&after_first_save).unwrap();
+            let (children, _) = SymbolLibrary::scan_top_level(&after_first_save).unwrap();
             let span = children.iter().find(|c| c.name == "symbol").unwrap();
             after_first_save[span.start..span.end].to_string()
         };

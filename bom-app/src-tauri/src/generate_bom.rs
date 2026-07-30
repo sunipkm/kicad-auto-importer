@@ -15,8 +15,8 @@ use crate::bom_pricing::{self, ChosenOffer, PartGroup, PricedRow};
 use crate::bom_report;
 use crate::parts_lookup::{self, PartsCredentials};
 use crate::populate_bom::{last_checked_age, LAST_CHECKED_PROPERTY, RECHECK_THRESHOLD};
-use kicad_auto_importer_core::schematic::SchematicFile;
-use kicad_auto_importer_core::symbol_importer::set_symbol_property;
+use kicad_parse::schematic::SchematicFile;
+use kicad_parse::symbol_importer::set_symbol_property;
 
 pub enum BomEvent {
     Log(String),
@@ -55,7 +55,7 @@ pub struct BomBatchRequest {
 /// per reference — the entire efficiency point of grouping identical
 /// parts first — and even that's skipped when a fresh-enough cached
 /// lookup is already sitting on the schematic (see module docs).
-pub fn run_bom_batch(request: BomBatchRequest, mut on_event: impl FnMut(BomEvent)) {
+pub fn run_bom_batch(request: BomBatchRequest, mut on_event: impl FnMut(BomEvent)) -> Vec<PricedRow> {
     let BomBatchRequest {
         groups,
         board_qty,
@@ -287,7 +287,8 @@ pub fn run_bom_batch(request: BomBatchRequest, mut on_event: impl FnMut(BomEvent
         }
     }
     if let Some(path) = &xlsx_path {
-        match bom_report::generate_priced_bom_xlsx(&priced_rows, board_qty, path) {
+        let xlsx_cols = crate::xlsx_columns::XlsxColumnsConfig::load().visible_columns();
+        match bom_report::generate_priced_bom_xlsx(&priced_rows, board_qty, &xlsx_cols, path) {
             Ok(()) => on_event(BomEvent::Log(format!(
                 "Priced BOM spreadsheet saved to '{}'.",
                 path.display()
@@ -302,4 +303,5 @@ pub fn run_bom_batch(request: BomBatchRequest, mut on_event: impl FnMut(BomEvent
         "Done: estimated total ${grand_total:.2}."
     )));
     on_event(BomEvent::Done { grand_total });
+    priced_rows
 }

@@ -8,7 +8,7 @@ use std::sync::mpsc;
 
 use egui::{Color32, RichText, Stroke};
 use egui_phosphor::regular as icon;
-use kicad_auto_importer_core::kicad_paths::{expand_kicad_vars, kiprjmod_relative_uri};
+use kicad_parse::kicad_paths::{expand_kicad_vars, kiprjmod_relative_uri};
 
 use crate::config::ImporterConfig;
 use crate::global_settings::GlobalSettings;
