@@ -20,14 +20,22 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-kicad-auto-importer-core.workspace = true
+kicad-auto-importer-core = { workspace = true, features = ["kicad-process"] }
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+dirs = "6"
 chrono = "0.4"
+thiserror = "2"
+ureq = "3"
+printpdf = "0.7"
+rust_xlsxwriter = "0.96.0"
 
 [target."cfg(target_os = \"linux\")".dev-dependencies]
 tempfile = "3"
+
+[dev-dependencies]
+calamine = "0.36.1"
 

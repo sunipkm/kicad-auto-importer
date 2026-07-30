@@ -1,0 +1,8 @@
+{
+    "chat.tools.terminal.autoApprove": {
+        "/^cargo test -p kicad-auto-importer 2>&1 \\| tail -40$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
+    }
+}

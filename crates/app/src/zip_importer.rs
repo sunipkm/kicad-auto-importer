@@ -22,10 +22,12 @@ use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
 use crate::footprint_importer::FootprintImporter;
-use crate::kicad_paths::register_project_library;
 use crate::model_importer::ModelImporter;
-use crate::sexp::{self, Child};
-use crate::symbol_importer::{is_top_level_symbol_name, patch_symbol_footprint, SymbolLibrary};
+use kicad_auto_importer_core::kicad_paths::register_project_library;
+use kicad_auto_importer_core::sexp::{self, Child};
+use kicad_auto_importer_core::symbol_importer::{
+    is_top_level_symbol_name, patch_symbol_footprint, SymbolLibrary,
+};
 
 /// Directories to ignore when scanning (macOS zip-extraction artefacts,
 /// our own backup folder, hidden/system folders).
@@ -50,7 +52,7 @@ pub enum ImportError {
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
     #[error("symbol library error: {0}")]
-    SymbolLibrary(#[from] crate::symbol_importer::SymbolLibraryError),
+    SymbolLibrary(#[from] kicad_auto_importer_core::symbol_importer::SymbolLibraryError),
     #[error("could not parse source symbol file '{path}': {source}")]
     SourceSexp {
         path: PathBuf,

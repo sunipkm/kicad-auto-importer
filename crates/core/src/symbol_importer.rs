@@ -427,6 +427,44 @@ pub fn set_symbol_property(sym_node: &mut SexpNode, key: &str, value: &str) {
     sym_node.push_node(prop);
 }
 
+/// Candidate property names (matched case-insensitively) that a symbol
+/// might already carry a manufacturer part number under, checked in
+/// priority order before falling back to the symbol's own name — see
+/// [`resolve_mpn`].
+const MPN_PROPERTY_CANDIDATES: &[&str] = &[
+    "MPN",
+    "Manufacturer Part Number",
+    "Mfr#",
+    "Mfr #",
+    "Part Number",
+];
+
+/// What to search Mouser/DigiKey for: an existing MPN-like property on
+/// `sym_node` if it has one (vendor-exported symbols, e.g. from
+/// UltraLibrarian, sometimes already carry one under a different name
+/// than this app writes to `Mfr #`), otherwise `symbol_name` itself —
+/// vendor-exported symbols are typically already named after the MPN.
+pub fn resolve_mpn(sym_node: &SexpNode, symbol_name: &str) -> String {
+    for prop in sym_node.find_all("property") {
+        let Some(Child::Atom(key)) = prop.children.first() else {
+            continue;
+        };
+        let is_mpn_candidate = MPN_PROPERTY_CANDIDATES
+            .iter()
+            .any(|candidate| candidate.eq_ignore_ascii_case(key.text()));
+        if !is_mpn_candidate {
+            continue;
+        }
+        if let Some(Child::Atom(value)) = prop.children.get(1) {
+            let value = value.text().trim();
+            if !value.is_empty() {
+                return value.to_string();
+            }
+        }
+    }
+    symbol_name.to_string()
+}
+
 fn walk<'a>(node: &'a SexpNode, f: &mut impl FnMut(&'a SexpNode)) {
     f(node);
     for child in &node.children {
@@ -574,6 +612,37 @@ mod tests {
             .find(|n| n.name == "symbol")
             .expect("sub-unit node should still be present");
         assert_eq!(prop_value(sub_unit, "Mfr"), None);
+    }
+
+    // ── MPN resolution ───────────────────────────────────────────────
+
+    #[test]
+    fn resolve_mpn_falls_back_to_symbol_name_when_no_candidate_property() {
+        let node = sexp::parse(r#"(symbol "LM358" (property "Reference" "U"))"#).unwrap();
+        assert_eq!(resolve_mpn(&node, "LM358"), "LM358");
+    }
+
+    #[test]
+    fn resolve_mpn_prefers_an_existing_mpn_property() {
+        let node = sexp::parse(
+            r#"(symbol "U1" (property "Reference" "U") (property "MPN" "LM358DR"))"#,
+        )
+        .unwrap();
+        assert_eq!(resolve_mpn(&node, "U1"), "LM358DR");
+    }
+
+    #[test]
+    fn resolve_mpn_candidate_matching_is_case_insensitive() {
+        let node =
+            sexp::parse(r#"(symbol "U1" (property "manufacturer part number" "LM358DR"))"#)
+                .unwrap();
+        assert_eq!(resolve_mpn(&node, "U1"), "LM358DR");
+    }
+
+    #[test]
+    fn resolve_mpn_ignores_a_blank_candidate_property() {
+        let node = sexp::parse(r#"(symbol "LM358" (property "MPN" ""))"#).unwrap();
+        assert_eq!(resolve_mpn(&node, "LM358"), "LM358");
     }
 
     #[test]

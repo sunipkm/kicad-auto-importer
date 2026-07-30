@@ -19,31 +19,36 @@ with full details:
   distributor data and generating a priced, multi-vendor PDF/XLSX BOM
   report.
 
-The two share Mouser/DigiKey API credentials via the same
-`settings.json` and reuse the same import/lookup/pricing logic from
-`crates/core` — see [Workspace layout](#workspace-layout) below.
+The two apps each keep their own Mouser/DigiKey API credentials and
+settings (separate `settings.json` files), but share the KiCad
+source-file primitives (S-expression parsing, `.kicad_sym`/`.kicad_sch`
+handling, project/library-table resolution) from `crates/core` — see
+[Workspace layout](#workspace-layout) below.
 
 ## Workspace layout
 
-- `crates/core` — the import pipeline: sexp (S-expression) parsing and
-  writing, `sym-lib-table`/`fp-lib-table` handling, the symbol /
-  footprint / 3-D model import pipeline, the folder-watcher's
-  settle/debounce logic, Mouser/DigiKey part lookups, BOM
-  grouping/pricing, and PDF/XLSX report generation, and config
-  persistence. No GUI dependency — fully unit tested on its own, and
-  shared unchanged by both apps below.
-- `crates/app` — the egui-based GUI: the main window (watch folder,
-  symbol/footprint library paths, options, a start/stop toggle, and an
-  activity log), the Import-From-Another-Project sub-window, the API
-  Settings popup, and system tray integration — all driving `core`. See
-  [`crates/app/README.md`](crates/app/README.md).
+- `crates/core` — core KiCad source-file primitives shared by both
+  apps: sexp (S-expression) parsing and writing, `.kicad_sym` symbol-
+  library and `.kicad_sch` schematic parsing/patching, and
+  `sym-lib-table`/`fp-lib-table`/project-file resolution. No GUI
+  dependency, no app-specific business logic — fully unit tested on its
+  own.
+- `crates/app` — the egui-based GUI, and this app's own exclusive
+  logic: the symbol/footprint/3-D-model import pipeline, the folder-
+  watcher's settle/debounce logic, and its project-scoped config
+  persistence — plus the main window (watch folder, symbol/footprint
+  library paths, options, a start/stop toggle, and an activity log),
+  the Import-From-Another-Project sub-window, and system tray
+  integration. See [`crates/app/README.md`](crates/app/README.md).
 - `bom-app` — a standalone Tauri (Rust backend + React/TypeScript
   frontend) app for Populate BOM and Generate BOM — see
   [`bom-app/README.md`](bom-app/README.md). Split out of `crates/app`
   because a richer, multi-vendor result picker needed more UI
   flexibility than egui's table widgets comfortably give; its backend
-  is a thin wrapper around the same `core` orchestration
-  (`populate_bom`/`generate_bom` modules), not a reimplementation.
+  owns its own Mouser/DigiKey lookup, BOM grouping/pricing, and
+  PDF/XLSX report generation logic (`parts_lookup`/`bom_pricing`/
+  `bom_report`/`populate_bom`/`generate_bom` modules), reusing only
+  `crates/core`'s schematic/symbol-library primitives.
 
 ## License
 

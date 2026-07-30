@@ -1,23 +1,16 @@
-//! Global (not per-project) app settings: the Mouser/DigiKey API
-//! credentials (see `crate::parts_lookup`), and the last-opened
-//! project's directory so the app can reopen it automatically on
-//! startup — every other per-project setting (watch folder, libraries,
-//! options) already lives in that project's own `ImporterConfig`
-//! (`.kicad-autoimport-cfg.json`), so remembering just the *path* is
-//! enough to restore the whole session.
+//! `kicad-auto-importer`'s own global (not per-project) settings —
+//! just the last-opened project's directory, so the app can reopen it
+//! automatically on startup; every other per-project setting (watch
+//! folder, libraries, options) already lives in that project's own
+//! `ImporterConfig` (`.kicad-autoimport-cfg.json`), so remembering just
+//! the *path* is enough to restore the whole session.
 //!
-//! Deliberately separate from `config.rs`'s `ImporterConfig`: that one
-//! is explicitly, by design, project-scoped (see its module docs) with
-//! no global fallback location, because every one of its other fields
-//! only makes sense in the context of a specific KiCad project. An API
-//! key/client ID/secret is an account-level credential that has nothing
-//! to do with any one project, and "which project was open last" is a
-//! property of the *app*, not of any project's own config file, so both
-//! live in their own file in a genuine global location instead —
-//! `dirs::config_dir()` (`~/.config` on Linux, `~/Library/Application
-//! Support` on macOS, `%APPDATA%` on Windows), the same crate already
-//! used elsewhere in this codebase for platform-appropriate directory
-//! discovery (see `kicad_paths::candidate_kicad_config_dirs`).
+//! Lives under `~/.config/kicad-auto-importer/settings.json` (per-OS
+//! equivalent of `dirs::config_dir()`). Deliberately app-local rather
+//! than in `kicad-auto-importer-core`: the companion `bom-app` has its
+//! own, entirely disjoint global settings (Mouser/DigiKey API
+//! credentials) and its own settings file, so there's nothing left for
+//! the two apps to actually share here.
 
 use std::fs;
 use std::path::PathBuf;
@@ -28,15 +21,9 @@ const SETTINGS_FILENAME: &str = "settings.json";
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct GlobalSettings {
-    #[serde(default)]
-    pub mouser_api_key: String,
-    #[serde(default)]
-    pub digikey_client_id: String,
-    #[serde(default)]
-    pub digikey_client_secret: String,
     /// Absolute path to the last project directory that was open, or
     /// `""` if none has been chosen yet. Restored on startup by
-    /// `MainApp::new` — see the module docs above.
+    /// `MainApp::new`, see the module docs above.
     #[serde(default)]
     pub last_project_path: String,
 }
@@ -50,10 +37,9 @@ impl GlobalSettings {
         )
     }
 
-    /// Never fails — same philosophy as `ImporterConfig::load`: no
-    /// settings file, no config dir, or corrupt JSON all just mean
-    /// "start from defaults" rather than an error the caller has to
-    /// handle.
+    /// Never fails — no settings file, no config dir, or corrupt JSON
+    /// all just mean "start from defaults" rather than an error the
+    /// caller has to handle, same philosophy as `ImporterConfig::load`.
     pub fn load() -> Self {
         Self::settings_path()
             .and_then(|path| fs::read_to_string(path).ok())
@@ -81,26 +67,20 @@ impl GlobalSettings {
 mod tests {
     use super::*;
 
-    /// `GlobalSettings::load`/`save` go through `dirs::config_dir()`,
-    /// which isn't test-overridable — these tests exercise the pure
-    /// serde round-trip and never-fails-on-garbage behavior directly,
-    /// the same properties `ImporterConfig`'s own tests check, just
-    /// without touching the real global config path.
+    /// `load`/`save` go through `dirs::config_dir()`, which isn't
+    /// test-overridable — these tests exercise the pure serde
+    /// round-trip and never-fails-on-garbage behavior directly, the
+    /// same properties `ImporterConfig`'s own tests check, just without
+    /// touching the real global config path.
     #[test]
     fn defaults_are_empty_strings() {
         let settings = GlobalSettings::default();
-        assert_eq!(settings.mouser_api_key, "");
-        assert_eq!(settings.digikey_client_id, "");
-        assert_eq!(settings.digikey_client_secret, "");
         assert_eq!(settings.last_project_path, "");
     }
 
     #[test]
     fn round_trips_through_serde() {
         let settings = GlobalSettings {
-            mouser_api_key: "some-mouser-key".to_string(),
-            digikey_client_id: "some-client-id".to_string(),
-            digikey_client_secret: "some-client-secret".to_string(),
             last_project_path: "/home/user/my-project".to_string(),
         };
         let text = serde_json::to_string_pretty(&settings).unwrap();

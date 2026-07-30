@@ -26,8 +26,8 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::parts_lookup;
 use crate::sexp::{self, Child, SexpNode};
+use crate::symbol_importer;
 
 /// One symbol placed on some sheet, deduplicated by reference — a
 /// multi-unit symbol (e.g. a quad op-amp) places one `(symbol ...)`
@@ -49,7 +49,7 @@ pub struct PlacedSymbol {
     /// grouping fallback as `value` and to detect passives (`R_`/`C_`/
     /// `L_` footprint name prefix) for `bom_pricing`'s extra-margin rule.
     pub footprint: String,
-    /// `parts_lookup::resolve_mpn` applied to this instance right now —
+    /// `symbol_importer::resolve_mpn` applied to this instance right now —
     /// an explicit MPN-like property if one is already set (by hand, or
     /// by a prior "Populate BOM" run), otherwise `symbol_name()` itself.
     /// Computed once here since the instance's own sexp node is already
@@ -74,7 +74,7 @@ impl PlacedSymbol {
     }
 
     /// The `lib_id`'s bare symbol name (after the `:`) — what
-    /// `parts_lookup::resolve_mpn` falls back to searching for when the
+    /// `symbol_importer::resolve_mpn` falls back to searching for when the
     /// instance carries no MPN-like property of its own.
     pub fn symbol_name(&self) -> &str {
         self.lib_id
@@ -206,7 +206,7 @@ fn collect_from_file(
         let symbol_name = lib_id
             .split_once(':')
             .map_or(lib_id.as_str(), |(_, name)| name);
-        let resolved_mpn = parts_lookup::resolve_mpn(sym, symbol_name);
+        let resolved_mpn = symbol_importer::resolve_mpn(sym, symbol_name);
         out.push(PlacedSymbol {
             reference,
             lib_id,
@@ -318,7 +318,7 @@ impl SchematicFile {
     }
 
     /// Queues `node` (already patched, e.g. via
-    /// `parts_lookup::apply_part_info`) to replace the instance with
+    /// `crate::parts_lookup::apply_part_info`) to replace the instance with
     /// this uuid the next time `save` is called. Returns `false` if no
     /// instance with that uuid exists in this file.
     pub fn patch_symbol(&mut self, uuid: &str, node: &SexpNode) -> bool {
@@ -500,7 +500,7 @@ mod tests {
         assert_eq!(rows[0].value, "10k");
         assert_eq!(rows[0].footprint, "");
         // No MPN-like property set on this instance, so it falls back
-        // to the bare symbol name — same rule as `parts_lookup::resolve_mpn`.
+        // to the bare symbol name — same rule as `symbol_importer::resolve_mpn`.
         assert_eq!(rows[0].resolved_mpn, "R");
     }
 

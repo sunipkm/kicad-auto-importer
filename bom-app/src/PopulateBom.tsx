@@ -26,7 +26,7 @@ interface PlacedSymbolRow {
   cached: CachedResult;
 }
 
-// Mirrors `GlobalSettings`/`PartsCredentials` — see `SettingsPanel.tsx`.
+// Mirrors `VendorCredentials`/`PartsCredentials` — see `SettingsPanel.tsx`.
 interface PartsCredentials {
   mouser_api_key: string;
   digikey_client_id: string;

@@ -634,8 +634,12 @@ dependencies = [
 name = "bom-app"
 version = "0.0.1"
 dependencies = [
+ "calamine",
  "chrono",
+ "dirs",
  "kicad-auto-importer-core",
+ "printpdf",
+ "rust_xlsxwriter",
  "serde",
  "serde_json",
  "tauri",
@@ -643,6 +647,8 @@ dependencies = [
  "tauri-plugin-dialog",
  "tauri-plugin-opener",
  "tempfile",
+ "thiserror 2.0.19",
+ "ureq",
 ]
 
 [[package]]
@@ -3116,6 +3122,7 @@ version = "0.0.1"
 dependencies = [
  "ab_glyph",
  "chrono",
+ "dirs",
  "eframe",
  "egui",
  "egui-phosphor",
@@ -3124,32 +3131,30 @@ dependencies = [
  "image",
  "interprocess",
  "kicad-auto-importer-core",
+ "notify",
+ "regex",
  "rfd 0.15.4",
+ "serde",
+ "serde_json",
+ "smol",
  "tempfile",
+ "thiserror 2.0.19",
  "tray-icon",
+ "walkdir",
  "winresource",
+ "zip 8.6.0",
 ]
 
 [[package]]
 name = "kicad-auto-importer-core"
 version = "0.0.1"
 dependencies = [
- "calamine",
- "chrono",
  "dirs",
- "notify",
- "printpdf",
  "regex",
- "rust_xlsxwriter",
- "serde",
  "serde_json",
- "smol",
  "sysinfo",
  "tempfile",
  "thiserror 2.0.19",
- "ureq",
- "walkdir",
- "zip 8.6.0",
 ]
 
 [[package]]

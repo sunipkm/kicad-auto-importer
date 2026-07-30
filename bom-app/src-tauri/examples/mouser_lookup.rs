@@ -1,11 +1,11 @@
-//! Standalone CLI to test `crate::mouser` against a real Mouser
+//! Standalone CLI to test `bom_app_lib::mouser` against a real Mouser
 //! account. Prints the raw JSON response alongside the parsed
 //! `MouserPart`, so a field-name mismatch between what's hard-coded in
 //! `mouser.rs` and what Mouser's API actually returns is immediately
 //! visible — see `docs/plans/parts-lookup.md`'s confidence caveat.
 //!
 //! Usage:
-//!   MOUSER_API_KEY=<key> cargo run -p kicad-auto-importer-core --example mouser_lookup -- <MPN>
+//!   MOUSER_API_KEY=<key> cargo run -p bom-app --example mouser_lookup -- <MPN>
 //!
 //! `MOUSER_API_KEY` may be omitted if `~/.kicadautoimporterrc` has a
 //! `[mouser]`/`api_key` entry instead — see `examples/common/mod.rs`.
@@ -13,12 +13,12 @@
 #[path = "common/mod.rs"]
 mod common;
 
-use kicad_auto_importer_core::mouser::{self, MouserCredentials};
+use bom_app_lib::mouser::{self, MouserCredentials};
 
 fn main() {
     let Some(mpn) = std::env::args().nth(1) else {
         eprintln!(
-            "Usage: MOUSER_API_KEY=<key> cargo run -p kicad-auto-importer-core --example mouser_lookup -- <MPN>"
+            "Usage: MOUSER_API_KEY=<key> cargo run -p bom-app --example mouser_lookup -- <MPN>"
         );
         std::process::exit(1);
     };

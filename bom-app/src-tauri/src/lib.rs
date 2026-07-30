@@ -3,47 +3,49 @@
 //! the repository root `README.md`'s "Workspace layout" section for
 //! why).
 //!
-//! Commands here are thin wrappers around `kicad_auto_importer_core` —
-//! the whole point of choosing Tauri over Electron is that the actual
-//! logic (schematic parsing, Mouser/DigiKey clients, grouping/pricing,
-//! PDF/XLSX generation) lives in that crate unchanged, reused as-is
-//! rather than reimplemented in JS/TS.
+//! Commands here wrap `kicad_auto_importer_core` for the shared KiCad
+//! file-format primitives (schematic parsing, symbol library patching)
+//! plus this app's own local modules for everything vendor/pricing-
+//! specific (Mouser/DigiKey clients, grouping/pricing, PDF/XLSX
+//! generation) — logic exclusive to this app, not shared with the egui
+//! `kicad-auto-importer` desktop app.
 
 #[cfg(target_os = "linux")]
 mod linux_desktop_integration;
+mod bom_pricing;
+mod bom_report;
+pub mod digikey;
+mod generate_bom;
+mod http_agent;
+pub mod mouser;
+mod parts_cache;
+mod parts_lookup;
+mod populate_bom;
+mod vendor_credentials;
 
 use tauri::{AppHandle, Emitter};
 
-use kicad_auto_importer_core::bom_pricing::{self, ChosenOffer};
-use kicad_auto_importer_core::digikey::{self, DigikeyCredentials};
-use kicad_auto_importer_core::generate_bom::{self, BomBatchRequest, BomEvent};
-use kicad_auto_importer_core::global_settings::GlobalSettings;
+use bom_pricing::ChosenOffer;
+use digikey::DigikeyCredentials;
+use generate_bom::{BomBatchRequest, BomEvent};
 use kicad_auto_importer_core::kicad_process;
-use kicad_auto_importer_core::mouser;
-use kicad_auto_importer_core::parts_cache::PartsCache;
-use kicad_auto_importer_core::parts_lookup::{
-    self, PartsCredentials, ScoredCandidate, VendorCandidate,
-};
-use kicad_auto_importer_core::populate_bom::{
-    self, LookupEvent, SelectedRow, LAST_CHECKED_PROPERTY, RECHECK_THRESHOLD,
-};
 use kicad_auto_importer_core::schematic::{self, SchematicFile};
 use kicad_auto_importer_core::symbol_importer::set_symbol_property;
+use parts_cache::PartsCache;
+use parts_lookup::{PartsCredentials, ScoredCandidate, VendorCandidate};
+use populate_bom::{LookupEvent, SelectedRow, LAST_CHECKED_PROPERTY, RECHECK_THRESHOLD};
+use vendor_credentials::VendorCredentials;
 
-/// Reads `~/.config/kicad-auto-importer/settings.json` (per-OS
-/// equivalent — see `GlobalSettings`'s own docs) — the *same* file the
-/// egui `kicad-auto-importer` app reads/writes, by construction: the
-/// location is derived from `dirs::config_dir()` alone, not from which
-/// binary is running, so Mouser/DigiKey credentials entered in either
-/// app are immediately visible in the other without any bridging code
-/// here beyond calling the same `core` function.
+/// Reads bom-app's own `~/.config/bom-app/settings.json` (per-OS
+/// equivalent — see `VendorCredentials`'s own docs), no longer shared
+/// with the separate egui `kicad-auto-importer` desktop app.
 #[tauri::command]
-fn load_global_settings() -> GlobalSettings {
-    GlobalSettings::load()
+fn load_vendor_credentials() -> VendorCredentials {
+    VendorCredentials::load()
 }
 
 #[tauri::command]
-fn save_global_settings(settings: GlobalSettings) -> Result<(), String> {
+fn save_vendor_credentials(settings: VendorCredentials) -> Result<(), String> {
     settings.save().map_err(|e| e.to_string())
 }
 
@@ -302,7 +304,7 @@ fn check_kicad_open(project_dir: String) -> bool {
     kicad_process::project_open_in_kicad(std::path::Path::new(&project_dir))
 }
 
-/// Mirrors `kicad_auto_importer_core::populate_bom::LookupEvent` as a
+/// Mirrors `crate::populate_bom::LookupEvent` as a
 /// JSON-serializable payload emitted to the frontend under the
 /// `populate-bom-event` event name — the Tauri equivalent of the egui
 /// app's `mpsc::Receiver<LookupEvent>` polling.
@@ -410,7 +412,7 @@ fn populate_bom(
 }
 
 /// One row of `list_part_groups` — the frontend's own copy of
-/// `kicad_auto_importer_core::bom_pricing::PartGroup`, trimmed to what
+/// `crate::bom_pricing::PartGroup`, trimmed to what
 /// the Generate BOM preview table shows. `index` matches this call's
 /// position, same pairing convention as `PlacedSymbolRow` — see its own
 /// docs for why re-listing between calls would break it (here, the
@@ -445,7 +447,7 @@ fn list_part_groups(project_dir: String) -> Vec<PartGroupRow> {
         .collect()
 }
 
-/// Mirrors `kicad_auto_importer_core::generate_bom::BomEvent` as a
+/// Mirrors `crate::generate_bom::BomEvent` as a
 /// JSON-serializable payload emitted under the `generate-bom-event`
 /// event name — the Generate BOM equivalent of `PopulateBomEvent`.
 #[derive(serde::Serialize, Clone)]
@@ -543,8 +545,8 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             open_project,
-            load_global_settings,
-            save_global_settings,
+            load_vendor_credentials,
+            save_vendor_credentials,
             test_mouser_credentials,
             test_digikey_credentials,
             list_placed_symbols,

@@ -15,8 +15,8 @@ use crate::bom_pricing::{self, ChosenOffer, PartGroup, PricedRow};
 use crate::bom_report;
 use crate::parts_lookup::{self, PartsCredentials};
 use crate::populate_bom::{last_checked_age, LAST_CHECKED_PROPERTY, RECHECK_THRESHOLD};
-use crate::schematic::SchematicFile;
-use crate::symbol_importer::set_symbol_property;
+use kicad_auto_importer_core::schematic::SchematicFile;
+use kicad_auto_importer_core::symbol_importer::set_symbol_property;
 
 pub enum BomEvent {
     Log(String),

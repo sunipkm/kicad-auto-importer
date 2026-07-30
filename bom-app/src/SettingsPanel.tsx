@@ -1,16 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
-// Mirrors `kicad_auto_importer_core::global_settings::GlobalSettings`
-// — the same struct/file the egui app's "API Settings" popup reads and
-// writes, via the `load_global_settings`/`save_global_settings` Tauri
-// commands (`src-tauri/src/lib.rs`), so credentials entered in either
-// app show up in the other.
-interface GlobalSettings {
+// Mirrors `vendor_credentials::VendorCredentials` — bom-app's own
+// settings.json, no longer shared with the egui desktop app — via the
+// `load_vendor_credentials`/`save_vendor_credentials` Tauri commands
+// (`src-tauri/src/lib.rs`).
+interface VendorCredentials {
   mouser_api_key: string;
   digikey_client_id: string;
   digikey_client_secret: string;
-  last_project_path: string;
 }
 
 type TestState = "idle" | "testing" | "ok" | { error: string };
@@ -28,7 +26,7 @@ function testStatusLabel(state: TestState): { text: string; className: string } 
 /// step shouldn't compete for space with the actual BOM tables.
 export function SettingsPanel() {
   const [open, setOpen] = useState(false);
-  const [settings, setSettings] = useState<GlobalSettings | null>(null);
+  const [settings, setSettings] = useState<VendorCredentials | null>(null);
   const [status, setStatus] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [mouserTest, setMouserTest] = useState<TestState>("idle");
@@ -37,7 +35,7 @@ export function SettingsPanel() {
 
   useEffect(() => {
     if (open && !settings) {
-      invoke<GlobalSettings>("load_global_settings").then(setSettings);
+      invoke<VendorCredentials>("load_vendor_credentials").then(setSettings);
     }
   }, [open, settings]);
 
@@ -57,7 +55,7 @@ export function SettingsPanel() {
     setStatus(null);
     setSaving(true);
     try {
-      await invoke("save_global_settings", { settings });
+      await invoke("save_vendor_credentials", { settings });
       setStatus("Saved.");
     } catch (exc) {
       setStatus(String(exc));
@@ -110,8 +108,7 @@ export function SettingsPanel() {
         <div className="settings-popover-panel">
           <h3>API Settings</h3>
           <p className="field-hint">
-            Shared with the kicad-auto-importer desktop app — credentials
-            entered here show up there too.
+            Mouser/DigiKey API credentials for this app's part lookups.
           </p>
 
           {!settings ? (

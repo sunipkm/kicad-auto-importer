@@ -1,7 +1,7 @@
 //! Global single-instance lock, Telegram-Desktop-style: only one process
 //! of this app ever runs. This exists because the app is deliberately
 //! single-project-scoped (one watch folder per running instance, see
-//! `kicad_auto_importer_core::config`) — so the simplest way to
+//! `crate::config`) — so the simplest way to
 //! guarantee two watchers never race on the same folder is to guarantee
 //! there's never a second process to begin with. Launching a second copy
 //! just asks the first one to show its window (which is also how it

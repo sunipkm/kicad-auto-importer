@@ -20,15 +20,15 @@ use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
 use crate::footprint_importer::{model_path_re, FootprintImporter};
-use crate::kicad_paths::{
+use crate::model_importer::ModelImporter;
+use crate::zip_importer::resolve_model_dir;
+use kicad_auto_importer_core::kicad_paths::{
     self, expand_kicad_vars, load_project_local_table, register_project_library, LibEntry,
 };
-use crate::model_importer::ModelImporter;
-use crate::sexp::{Child, SexpNode};
-use crate::symbol_importer::{
+use kicad_auto_importer_core::sexp::{Child, SexpNode};
+use kicad_auto_importer_core::symbol_importer::{
     extract_footprint_ref, is_top_level_symbol_name, patch_symbol_footprint, SymbolLibrary,
 };
-use crate::zip_importer::resolve_model_dir;
 
 /// One row in the cherry-pick table: a symbol found in another project,
 /// plus enough metadata to display it and (later) import it.

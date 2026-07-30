@@ -16,8 +16,8 @@
 use crate::digikey::{self, DigikeyCredentials, DigikeyError, DigikeyPart};
 use crate::mouser::{self, MouserCredentials, MouserError, MouserPart};
 use crate::parts_cache::PartsCache;
-use crate::sexp::{Child, SexpNode};
-use crate::symbol_importer::{get_symbol_property, set_symbol_property};
+use kicad_auto_importer_core::sexp::SexpNode;
+use kicad_auto_importer_core::symbol_importer::{get_symbol_property, set_symbol_property};
 
 /// A handful of the cheapest-to-priciest quantity breaks, packed into
 /// one string — see [`format_price_breaks`]. KiCad symbol properties
@@ -185,6 +185,7 @@ pub enum PartsLookupError {
 /// docs) rather than one after the other: with both configured, this
 /// call's latency used to be roughly Mouser's round trip *plus*
 /// DigiKey's; now it's whichever of the two is slower.
+#[allow(dead_code)]
 pub fn lookup_part_info(creds: &PartsCredentials, mpn: &str) -> Result<PartInfo, PartsLookupError> {
     let want_mouser = !creds.mouser_api_key.trim().is_empty();
     let want_digikey = !creds.digikey_client_id.trim().is_empty()
@@ -662,44 +663,6 @@ fn parse_raw_price_breaks(raw: &str) -> Vec<(f64, f64)> {
         .collect()
 }
 
-/// Candidate property names (matched case-insensitively) that a symbol
-/// might already carry a manufacturer part number under, checked in
-/// priority order before falling back to the symbol's own name — see
-/// [`resolve_mpn`].
-const MPN_PROPERTY_CANDIDATES: &[&str] = &[
-    "MPN",
-    "Manufacturer Part Number",
-    "Mfr#",
-    "Mfr #",
-    "Part Number",
-];
-
-/// What to search Mouser/DigiKey for: an existing MPN-like property on
-/// `sym_node` if it has one (vendor-exported symbols, e.g. from
-/// UltraLibrarian, sometimes already carry one under a different name
-/// than this app writes to `Mfr #`), otherwise `symbol_name` itself —
-/// vendor-exported symbols are typically already named after the MPN.
-pub fn resolve_mpn(sym_node: &SexpNode, symbol_name: &str) -> String {
-    for prop in sym_node.find_all("property") {
-        let Some(Child::Atom(key)) = prop.children.first() else {
-            continue;
-        };
-        let is_mpn_candidate = MPN_PROPERTY_CANDIDATES
-            .iter()
-            .any(|candidate| candidate.eq_ignore_ascii_case(key.text()));
-        if !is_mpn_candidate {
-            continue;
-        }
-        if let Some(Child::Atom(value)) = prop.children.get(1) {
-            let value = value.text().trim();
-            if !value.is_empty() {
-                return value.to_string();
-            }
-        }
-    }
-    symbol_name.to_string()
-}
-
 /// Sorted-by-quantity, capped-at-[`MAX_PRICE_BREAKS`], compact price
 /// string shared by the `mouser`/`digikey` clients — each reduces its
 /// own vendor-specific price-break shape down to `(quantity, price)`
@@ -983,6 +946,7 @@ pub fn lookup_best_match(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kicad_auto_importer_core::sexp::Child;
 
     fn mouser_part(seller_suffix: &str) -> MouserPart {
         MouserPart {
@@ -1205,7 +1169,7 @@ mod tests {
             Some(Ok(digikey_part())),
         )
         .unwrap();
-        let mut node = crate::sexp::parse(r#"(symbol "U1" (property "Reference" "U"))"#).unwrap();
+        let mut node = kicad_auto_importer_core::sexp::parse(r#"(symbol "U1" (property "Reference" "U"))"#).unwrap();
         apply_part_info(&mut node, &info);
 
         let prop_value = |key: &str| -> Option<String> {
@@ -1239,7 +1203,7 @@ mod tests {
         let mut mouser = mouser_part("a");
         mouser.suggested_replacement = "LM358PWR".to_string();
         let info = combine_results("LM358P", Some(Ok(mouser)), None).unwrap();
-        let mut node = crate::sexp::parse(r#"(symbol "U1" (property "Reference" "U"))"#).unwrap();
+        let mut node = kicad_auto_importer_core::sexp::parse(r#"(symbol "U1" (property "Reference" "U"))"#).unwrap();
         apply_part_info(&mut node, &info);
 
         let has_replacement = node.find_all("property").into_iter().any(|p| {
@@ -1256,7 +1220,7 @@ mod tests {
         let mut mouser = mouser_part("a");
         mouser.price_breaks = vec![(1.0, 0.55), (10.0, 0.41), (100.0, 0.32)];
         let info = combine_results("LM358P", Some(Ok(mouser)), Some(Ok(digikey_part()))).unwrap();
-        let mut node = crate::sexp::parse(r#"(symbol "U1" (property "Reference" "U"))"#).unwrap();
+        let mut node = kicad_auto_importer_core::sexp::parse(r#"(symbol "U1" (property "Reference" "U"))"#).unwrap();
         apply_part_info(&mut node, &info);
 
         let cached = read_cached_part_info(&node).unwrap();
@@ -1273,7 +1237,7 @@ mod tests {
 
     #[test]
     fn read_cached_part_info_is_none_when_never_looked_up() {
-        let node = crate::sexp::parse(r#"(symbol "U1" (property "Reference" "U"))"#).unwrap();
+        let node = kicad_auto_importer_core::sexp::parse(r#"(symbol "U1" (property "Reference" "U"))"#).unwrap();
         assert!(read_cached_part_info(&node).is_none());
     }
 
@@ -1285,7 +1249,7 @@ mod tests {
         // miss (and do a fresh lookup) rather than a priceable-but-empty
         // hit, or it'd report "no priced offers available" for a full
         // 24h even though a real lookup would find prices.
-        let mut node = crate::sexp::parse(r#"(symbol "U1" (property "Reference" "U"))"#).unwrap();
+        let mut node = kicad_auto_importer_core::sexp::parse(r#"(symbol "U1" (property "Reference" "U"))"#).unwrap();
         set_symbol_property(&mut node, "Mfr", "Texas Instruments");
         set_symbol_property(&mut node, "Mfr #", "LM358P");
         set_symbol_property(&mut node, "Mouser", "https://mouser.com/lm358p");
@@ -1400,7 +1364,7 @@ mod tests {
     #[test]
     fn apply_part_info_writes_a_vendor_description_property() {
         let info = combine_results("LM358P", Some(Ok(mouser_part("a"))), None).unwrap();
-        let mut node = crate::sexp::parse(r#"(symbol "U1" (property "Reference" "U"))"#).unwrap();
+        let mut node = kicad_auto_importer_core::sexp::parse(r#"(symbol "U1" (property "Reference" "U"))"#).unwrap();
         apply_part_info(&mut node, &info);
 
         let has_description = node.find_all("property").into_iter().any(|p| {
@@ -1415,7 +1379,7 @@ mod tests {
         let mut mouser = mouser_part("a");
         mouser.description = String::new();
         let info = combine_results("LM358P", Some(Ok(mouser)), None).unwrap();
-        let mut node = crate::sexp::parse(r#"(symbol "U1" (property "Reference" "U"))"#).unwrap();
+        let mut node = kicad_auto_importer_core::sexp::parse(r#"(symbol "U1" (property "Reference" "U"))"#).unwrap();
         apply_part_info(&mut node, &info);
 
         let has_description = node
@@ -1440,37 +1404,6 @@ mod tests {
             format_price_breaks(&breaks),
             "1:$0.55 | 10:$0.41 | 100:$0.32 | 1000:$0.20"
         );
-    }
-
-    // ── MPN resolution ───────────────────────────────────────────────
-
-    #[test]
-    fn resolve_mpn_falls_back_to_symbol_name_when_no_candidate_property() {
-        let node = crate::sexp::parse(r#"(symbol "LM358" (property "Reference" "U"))"#).unwrap();
-        assert_eq!(resolve_mpn(&node, "LM358"), "LM358");
-    }
-
-    #[test]
-    fn resolve_mpn_prefers_an_existing_mpn_property() {
-        let node = crate::sexp::parse(
-            r#"(symbol "U1" (property "Reference" "U") (property "MPN" "LM358DR"))"#,
-        )
-        .unwrap();
-        assert_eq!(resolve_mpn(&node, "U1"), "LM358DR");
-    }
-
-    #[test]
-    fn resolve_mpn_candidate_matching_is_case_insensitive() {
-        let node =
-            crate::sexp::parse(r#"(symbol "U1" (property "manufacturer part number" "LM358DR"))"#)
-                .unwrap();
-        assert_eq!(resolve_mpn(&node, "U1"), "LM358DR");
-    }
-
-    #[test]
-    fn resolve_mpn_ignores_a_blank_candidate_property() {
-        let node = crate::sexp::parse(r#"(symbol "LM358" (property "MPN" ""))"#).unwrap();
-        assert_eq!(resolve_mpn(&node, "LM358"), "LM358");
     }
 
     // ── cheapest_purchase ────────────────────────────────────────────

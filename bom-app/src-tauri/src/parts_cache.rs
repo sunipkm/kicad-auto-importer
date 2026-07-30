@@ -19,10 +19,10 @@
 //! automatically instead of trusting whichever result an API happened
 //! to return first.
 //!
-//! Lives in the same global config location as [`crate::global_settings::GlobalSettings`]
-//! (`dirs::config_dir()/kicad-auto-importer/parts_cache.json`) for the
-//! same reason: a vendor's catalog data for a given MPN has nothing to
-//! do with any one project.
+//! Lives in the same global config directory as the desktop app's own
+//! settings file (`dirs::config_dir()/kicad-auto-importer/parts_cache.json`)
+//! for the same reason: a vendor's catalog data for a given MPN has
+//! nothing to do with any one project.
 //!
 //! Writes are deliberately narrow: [`PartsCache::save`] only ever
 //! upserts the specific search-string keys this process actually
@@ -92,7 +92,7 @@ impl PartsCache {
             .unwrap_or_default()
     }
 
-    /// Never fails — same philosophy as `GlobalSettings::load`: no
+    /// Never fails — same philosophy as `VendorCredentials::load`: no
     /// cache file, no config dir, or corrupt JSON all just mean "start
     /// with an empty cache" rather than an error every caller has to
     /// handle.

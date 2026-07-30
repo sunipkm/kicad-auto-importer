@@ -1,27 +1,15 @@
-//! Core, GUI-free import pipeline for kicad-auto-importer — ported
-//! from the sibling Python KiCad plugin's `plugins/importer/*`,
-//! `plugins/watcher.py`, and `plugins/config.py`. No dependency on any
-//! GUI toolkit or on KiCad itself; the `app` crate is the only thing
-//! that knows about windows.
+//! Core KiCad source-file primitives shared by (or reusable across)
+//! both `kicad-auto-importer` and `bom-app`: S-expression parsing,
+//! symbol-library (`.kicad_sym`) and schematic (`.kicad_sch`) parsing/
+//! patching, and project/library-table (`fp-lib-table`/`sym-lib-table`)
+//! resolution — the parts of the original Python plugin's
+//! `plugins/importer/*` genuinely about the *shape* of KiCad's own file
+//! formats, as opposed to either app's own import/pricing/watch
+//! features built on top of them.
 
-pub mod bom_pricing;
-pub mod bom_report;
-pub mod config;
-pub mod digikey;
-pub mod footprint_importer;
-pub mod generate_bom;
-pub mod global_settings;
-pub mod http_agent;
 pub mod kicad_paths;
+#[cfg(feature = "kicad-process")]
 pub mod kicad_process;
-pub mod library_import;
-pub mod model_importer;
-pub mod mouser;
-pub mod parts_cache;
-pub mod parts_lookup;
-pub mod populate_bom;
 pub mod schematic;
 pub mod sexp;
 pub mod symbol_importer;
-pub mod watcher;
-pub mod zip_importer;

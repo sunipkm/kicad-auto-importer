@@ -20,7 +20,7 @@ use egui::{Color32, RichText};
 use egui_extras::{Column, TableBuilder};
 use egui_phosphor::regular as icon;
 
-use kicad_auto_importer_core::library_import::{
+use crate::library_import::{
     import_symbols, load_project_symbols, load_symbols_from_file, project_dir_from_pro_file,
     CrossImportSettings, SourceSymbol,
 };

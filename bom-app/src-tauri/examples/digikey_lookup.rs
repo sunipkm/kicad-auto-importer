@@ -1,4 +1,4 @@
-//! Standalone CLI to test `crate::digikey` against a real DigiKey
+//! Standalone CLI to test `bom_app_lib::digikey` against a real DigiKey
 //! account. Prints the raw JSON response alongside the parsed
 //! `DigikeyPart`, so a field-name mismatch between what's hard-coded in
 //! `digikey.rs` and what DigiKey's API actually returns is immediately
@@ -6,7 +6,7 @@
 //!
 //! Usage:
 //!   DIGIKEY_CLIENT_ID=<id> DIGIKEY_CLIENT_SECRET=<secret> \
-//!     cargo run -p kicad-auto-importer-core --example digikey_lookup -- <MPN>
+//!     cargo run -p bom-app --example digikey_lookup -- <MPN>
 //!
 //! Both env vars may be omitted if `~/.kicadautoimporterrc` has
 //! `[digikey]`/`client_id`+`client_secret` entries instead — see
@@ -15,12 +15,12 @@
 #[path = "common/mod.rs"]
 mod common;
 
-use kicad_auto_importer_core::digikey::{self, DigikeyCredentials};
+use bom_app_lib::digikey::{self, DigikeyCredentials};
 
 fn main() {
     let Some(mpn) = std::env::args().nth(1) else {
         eprintln!(
-            "Usage: DIGIKEY_CLIENT_ID=<id> DIGIKEY_CLIENT_SECRET=<secret> cargo run -p kicad-auto-importer-core --example digikey_lookup -- <MPN>"
+            "Usage: DIGIKEY_CLIENT_ID=<id> DIGIKEY_CLIENT_SECRET=<secret> cargo run -p bom-app --example digikey_lookup -- <MPN>"
         );
         std::process::exit(1);
     };

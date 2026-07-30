@@ -5,27 +5,19 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
-description = "GUI-free import pipeline for KiCad symbol/footprint libraries: S-expression parsing, sym-lib-table/fp-lib-table handling, and part-provider ZIP/folder import."
+description = "Core KiCad source-file primitives shared by kicad-auto-importer and bom-app: S-expression parsing, .kicad_sym/.kicad_sch handling, and project/library-table resolution."
 readme = "../../README.md"
 keywords = ["kicad", "eda", "electronics", "footprint", "schematic"]
 categories = ["parser-implementations", "filesystem"]
 
 [dependencies]
-serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 regex = "1"
-notify = "8"
-zip = "8.6"
-walkdir = "2"
 dirs = "6"
 thiserror = "2"
 tempfile = "3"
-smol = "2.0.2"
-ureq = "3"
-printpdf = "0.7"
-sysinfo = "0.39"
-rust_xlsxwriter = "0.96.0"
-chrono = "0.4"
+sysinfo = { version = "0.39", optional = true }
 
-[dev-dependencies]
-calamine = "0.36.1"
+[features]
+kicad-process = ["dep:sysinfo"]
+

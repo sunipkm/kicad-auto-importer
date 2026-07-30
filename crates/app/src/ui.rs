@@ -5,73 +5,22 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
-use std::thread;
 
 use egui::{Color32, RichText, Stroke};
 use egui_phosphor::regular as icon;
-use kicad_auto_importer_core::config::ImporterConfig;
-use kicad_auto_importer_core::digikey::{self, DigikeyCredentials};
-use kicad_auto_importer_core::global_settings::GlobalSettings;
 use kicad_auto_importer_core::kicad_paths::{expand_kicad_vars, kiprjmod_relative_uri};
-use kicad_auto_importer_core::library_import::CrossImportSettings;
-use kicad_auto_importer_core::mouser;
-use kicad_auto_importer_core::watcher::{FolderWatcher, WatchEvent};
-use kicad_auto_importer_core::zip_importer::{
+
+use crate::config::ImporterConfig;
+use crate::global_settings::GlobalSettings;
+use crate::library_import::CrossImportSettings;
+use crate::library_import_ui::{self, LibraryImportState};
+use crate::theme::{self, ACCENT, DANGER, TITLE_BAR_BG};
+use crate::tray;
+use crate::watcher::{FolderWatcher, WatchEvent};
+use crate::window_chrome;
+use crate::zip_importer::{
     import_folder, import_zip, validate_model_subdir, ImportSettings,
 };
-
-use crate::library_import_ui::{self, LibraryImportState};
-use crate::theme::{self, ACCENT, DANGER, OK, TITLE_BAR_BG};
-use crate::tray;
-use crate::window_chrome;
-
-/// One vendor's API-credential check, run on a background thread so a
-/// slow/hanging request from the "Test" button in `vendor_settings_button`
-/// can't freeze the whole window — same rationale as
-/// `library_import_ui`'s background imports.
-#[derive(Default)]
-struct CredentialTest {
-    state: CredentialTestState,
-    rx: Option<mpsc::Receiver<Result<(), String>>>,
-}
-
-#[derive(Default, PartialEq)]
-enum CredentialTestState {
-    #[default]
-    Idle,
-    Testing,
-    Valid,
-    Invalid(String),
-}
-
-impl CredentialTest {
-    fn start(&mut self, work: impl FnOnce() -> Result<(), String> + Send + 'static) {
-        let (tx, rx) = mpsc::channel();
-        self.rx = Some(rx);
-        self.state = CredentialTestState::Testing;
-        thread::Builder::new()
-            .name("credential-test".into())
-            .spawn(move || {
-                let _ = tx.send(work());
-            })
-            .expect("failed to spawn the credential-test thread");
-    }
-
-    /// Polled once per frame regardless of whether the popup showing its
-    /// result is even open, so a result that lands while the popup is
-    /// closed isn't lost — the next time it's opened just shows whatever
-    /// finished in the meantime.
-    fn poll(&mut self) {
-        let Some(rx) = &self.rx else { return };
-        if let Ok(result) = rx.try_recv() {
-            self.state = match result {
-                Ok(()) => CredentialTestState::Valid,
-                Err(msg) => CredentialTestState::Invalid(msg),
-            };
-            self.rx = None;
-        }
-    }
-}
 
 pub struct MainApp {
     project_path: String, // absolute path to the project directory, or "" if none chosen yet
@@ -89,17 +38,6 @@ pub struct MainApp {
     status: String,
 
     library_import: LibraryImportState,
-
-    /// Mouser/DigiKey API credentials — global (not per-project), see
-    /// `GlobalSettings`. Loaded once at startup, saved back whenever
-    /// any field loses focus (see `update()`).
-    mouser_api_key: String,
-    digikey_client_id: String,
-    digikey_client_secret: String,
-    /// Result of the last "Test" click in the API Settings popup for
-    /// each vendor, if any — see `CredentialTest`.
-    mouser_test: CredentialTest,
-    digikey_test: CredentialTest,
 
     /// Fires whenever a second copy of the app is launched (see
     /// `single_instance`) — the window should show/focus itself.
@@ -154,11 +92,6 @@ impl MainApp {
             log_lines: Vec::new(),
             status: String::new(),
             library_import: LibraryImportState::default(),
-            mouser_api_key: global_settings.mouser_api_key,
-            digikey_client_id: global_settings.digikey_client_id,
-            digikey_client_secret: global_settings.digikey_client_secret,
-            mouser_test: CredentialTest::default(),
-            digikey_test: CredentialTest::default(),
             wake_rx,
             force_quit: false,
             _tray_icon: tray_icon,
@@ -280,150 +213,16 @@ impl MainApp {
         }
     }
 
-    /// Unlike `save_config`, not tied to `project_dir()` — Mouser/DigiKey
-    /// credentials and the last-opened project path are account-/app-level,
-    /// not per-project (see `GlobalSettings`'s module docs).
+    /// Unlike `save_config`, not tied to `project_dir()` — the
+    /// last-opened project path is account-/app-level, not per-project
+    /// (see `GlobalSettings`'s module docs).
     fn save_global_settings(&mut self) {
         let settings = GlobalSettings {
-            mouser_api_key: self.mouser_api_key.clone(),
-            digikey_client_id: self.digikey_client_id.clone(),
-            digikey_client_secret: self.digikey_client_secret.clone(),
             last_project_path: self.project_path.clone(),
         };
         if let Err(exc) = settings.save() {
-            self.log(format!("\u{2718} Could not save API settings: {exc}"));
+            self.log(format!("\u{2718} Could not save settings: {exc}"));
         }
-    }
-
-    /// A single button that pops out the Mouser/DigiKey credential
-    /// fields on click, rather than the fields themselves sitting
-    /// permanently in the main form — they're an occasional, one-time
-    /// setup step, not something touched on every run the way the
-    /// project/watch-folder fields are.
-    ///
-    /// The two vendors are visually separate blocks (own heading, own
-    /// link, own fields, own Test button/status) rather than one shared
-    /// list of rows — they're independent credentials for independent
-    /// services, and the shared-list layout made it easy to misread
-    /// which label belonged to which field.
-    fn vendor_settings_button(&mut self, ui: &mut egui::Ui) {
-        let btn = ui.button(format!("{}  API Settings", icon::KEY));
-        let popup_id = ui.make_persistent_id("vendor_settings_popup");
-        if btn.clicked() {
-            ui.memory_mut(|mem| mem.toggle_popup(popup_id));
-        }
-        popup_right_aligned_below_widget(
-            ui,
-            popup_id,
-            &btn,
-            egui::popup::PopupCloseBehavior::CloseOnClickOutside,
-            |ui| {
-                ui.set_min_width(440.0);
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new(icon::KEY).color(ACCENT));
-                    ui.label(RichText::new("Mouser / DigiKey API").strong());
-                });
-                ui.add_space(2.0);
-                ui.label(
-                    RichText::new(
-                        "This app doesn't look up parts itself — that's the \
-                         companion KiCad BOM Tool (bom-app)'s job. Set either \
-                         or both vendors here and they're immediately \
-                         available there too, since both share this same \
-                         settings.json.",
-                    )
-                    .small()
-                    .weak(),
-                );
-
-                let mut settings_changed = false;
-                let label_width = 90.0;
-
-                ui.add_space(10.0);
-                ui.separator();
-                ui.label(RichText::new("Mouser").strong().color(ACCENT));
-                ui.hyperlink_to(
-                    format!(
-                        "{} Get an API key at mouser.com/api-search",
-                        icon::ARROW_SQUARE_OUT
-                    ),
-                    "https://www.mouser.com/api-search/",
-                );
-                ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    ui.add_sized([label_width, 22.0], egui::Label::new("API Key:"));
-                    let remaining = ui.available_width();
-                    let resp = ui.add_sized(
-                        [remaining, 22.0],
-                        egui::TextEdit::singleline(&mut self.mouser_api_key).password(true),
-                    );
-                    settings_changed |= resp.lost_focus();
-                });
-                ui.horizontal(|ui| {
-                    let testing = self.mouser_test.state == CredentialTestState::Testing;
-                    if ui
-                        .add_enabled(!testing, egui::Button::new("Test"))
-                        .clicked()
-                    {
-                        let key = self.mouser_api_key.clone();
-                        self.mouser_test.start(move || {
-                            mouser::test_credentials(&key).map_err(|e| e.to_string())
-                        });
-                    }
-                    credential_status_label(ui, &self.mouser_test.state);
-                });
-
-                ui.add_space(10.0);
-                ui.separator();
-                ui.label(RichText::new("DigiKey").strong().color(ACCENT));
-                ui.hyperlink_to(
-                    format!(
-                        "{} Get credentials at developer.digikey.com",
-                        icon::ARROW_SQUARE_OUT
-                    ),
-                    "https://developer.digikey.com/",
-                );
-                ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    ui.add_sized([label_width, 22.0], egui::Label::new("Client ID:"));
-                    let remaining = ui.available_width();
-                    let resp = ui.add_sized(
-                        [remaining, 22.0],
-                        egui::TextEdit::singleline(&mut self.digikey_client_id),
-                    );
-                    settings_changed |= resp.lost_focus();
-                });
-                ui.horizontal(|ui| {
-                    ui.add_sized([label_width, 22.0], egui::Label::new("Client Secret:"));
-                    let remaining = ui.available_width();
-                    let resp = ui.add_sized(
-                        [remaining, 22.0],
-                        egui::TextEdit::singleline(&mut self.digikey_client_secret).password(true),
-                    );
-                    settings_changed |= resp.lost_focus();
-                });
-                ui.horizontal(|ui| {
-                    let testing = self.digikey_test.state == CredentialTestState::Testing;
-                    if ui
-                        .add_enabled(!testing, egui::Button::new("Test"))
-                        .clicked()
-                    {
-                        let creds = DigikeyCredentials {
-                            client_id: self.digikey_client_id.clone(),
-                            client_secret: self.digikey_client_secret.clone(),
-                        };
-                        self.digikey_test.start(move || {
-                            digikey::test_credentials(&creds).map_err(|e| e.to_string())
-                        });
-                    }
-                    credential_status_label(ui, &self.digikey_test.state);
-                });
-
-                if settings_changed {
-                    self.save_global_settings();
-                }
-            },
-        );
     }
 
     fn build_settings(&mut self, with_watch_folder: bool) -> Option<ImportSettings> {
@@ -718,7 +517,6 @@ impl MainApp {
     }
 }
 
-/// Like `egui::popup::popup_below_widget`, but pins the popup's top-
 /// If `path` names a `.kicad_pro` file (case-insensitive extension),
 /// returns its parent directory as a string — `None` if `path` doesn't
 /// end in `.kicad_pro` (already a directory, or empty) or has no parent
@@ -734,69 +532,6 @@ fn kicad_pro_parent_dir(path: &str) -> Option<String> {
     }
     p.parent()
         .map(|parent| parent.to_string_lossy().to_string())
-}
-
-/// *right* corner under the widget's right edge instead of its left
-/// edge, so the popup grows leftward as it widens. Needed for
-/// `vendor_settings_button`: that button sits at the window's right
-/// edge, and the default left-anchored popup either clips against the
-/// window boundary or has to stay narrow to avoid it.
-///
-/// A near-copy of `egui::containers::popup::popup_above_or_below_widget`
-/// (below-only, mirrored horizontally) with one small omission: it
-/// can't register into `Context`'s internal per-layer open-popup
-/// bookkeeping, since that's a `pub(crate)` API inside egui itself.
-/// That bookkeeping only affects some nested-popup edge cases egui
-/// doesn't document further; open/close and click-outside-to-close
-/// (the behavior this app actually relies on) go through the public
-/// `Memory` popup API and work identically.
-fn popup_right_aligned_below_widget<R>(
-    ui: &egui::Ui,
-    popup_id: egui::Id,
-    widget_response: &egui::Response,
-    close_behavior: egui::popup::PopupCloseBehavior,
-    add_contents: impl FnOnce(&mut egui::Ui) -> R,
-) -> Option<R> {
-    if !ui.memory(|mem| mem.is_popup_open(popup_id)) {
-        return None;
-    }
-
-    let pos = widget_response.rect.right_bottom();
-    let pivot = egui::Align2::RIGHT_TOP;
-
-    let frame = egui::Frame::popup(ui.style());
-    let frame_margin = frame.total_margin();
-    let inner_width = widget_response.rect.width() - frame_margin.sum().x;
-
-    let response = egui::Area::new(popup_id)
-        .kind(egui::UiKind::Popup)
-        .order(egui::Order::Foreground)
-        .fixed_pos(pos)
-        .default_width(inner_width)
-        .pivot(pivot)
-        .show(ui.ctx(), |ui| {
-            frame
-                .show(ui, |ui| {
-                    ui.with_layout(egui::Layout::top_down_justified(egui::Align::LEFT), |ui| {
-                        ui.set_min_width(inner_width);
-                        add_contents(ui)
-                    })
-                    .inner
-                })
-                .inner
-        });
-
-    let should_close = match close_behavior {
-        egui::popup::PopupCloseBehavior::CloseOnClick => widget_response.clicked_elsewhere(),
-        egui::popup::PopupCloseBehavior::CloseOnClickOutside => {
-            widget_response.clicked_elsewhere() && response.response.clicked_elsewhere()
-        }
-        egui::popup::PopupCloseBehavior::IgnoreClicks => false,
-    };
-    if ui.input(|i| i.key_pressed(egui::Key::Escape)) || should_close {
-        ui.memory_mut(|mem| mem.close_popup());
-    }
-    Some(response.inner)
 }
 
 /// A labeled path field that fills all remaining horizontal space in
@@ -840,29 +575,9 @@ fn path_row(
     clicked
 }
 
-/// The icon + colored text shown next to each vendor's "Test" button in
-/// `MainApp::vendor_settings_button`, reflecting that vendor's
-/// `CredentialTest::state`.
-fn credential_status_label(ui: &mut egui::Ui, state: &CredentialTestState) {
-    let (glyph, color, text) = match state {
-        CredentialTestState::Idle => (
-            icon::CIRCLE_DASHED,
-            Color32::from_gray(140),
-            "Not tested yet".to_string(),
-        ),
-        CredentialTestState::Testing => (icon::SPINNER, ACCENT, "Testing\u{2026}".to_string()),
-        CredentialTestState::Valid => (icon::CHECK_CIRCLE, OK, "Connected".to_string()),
-        CredentialTestState::Invalid(msg) => (icon::X_CIRCLE, DANGER, msg.clone()),
-    };
-    ui.label(RichText::new(glyph).color(color));
-    ui.add(egui::Label::new(RichText::new(text).small().color(color)).wrap());
-}
-
 impl eframe::App for MainApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.drain_log_channel();
-        self.mouser_test.poll();
-        self.digikey_test.poll();
         self.drain_tray_events(ctx);
         // Always scheduled, not just while watching: wake_rx/tray events
         // (a second instance launching, a tray click) need to be polled
@@ -920,17 +635,6 @@ impl eframe::App for MainApp {
                                     "Idle"
                                 })
                                 .weak(),
-                            );
-                            // The status row has plenty of empty width
-                            // next to a short "Idle"/"Watching…" label —
-                            // a natural home for the (infrequently
-                            // touched) API credentials, tucked into a
-                            // popout instead of taking up permanent
-                            // vertical space among the fields used every
-                            // time.
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| self.vendor_settings_button(ui),
                             );
                         });
                         ui.add_space(4.0);

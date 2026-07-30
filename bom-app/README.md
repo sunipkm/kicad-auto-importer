@@ -10,12 +10,12 @@ cheapest available Mouser/DigiKey quantity break, and export a priced
 PDF/XLSX report).
 
 It is a [Tauri](https://tauri.app/) app: a Rust backend
-(`src-tauri/`) plus a React/TypeScript frontend (`src/`). The backend
-is a thin wrapper — schematic parsing, Mouser/DigiKey API clients,
-grouping/pricing math, and PDF/XLSX generation all live in the sibling
-[`crates/core`](../crates/core) crate, reused unchanged from the main
-`kicad-auto-importer` desktop app ([`crates/app`](../crates/app/README.md))
-rather than reimplemented here. See the root
+(`src-tauri/`) plus a React/TypeScript frontend (`src/`). Schematic
+parsing and symbol-library patching reuse the sibling
+[`crates/core`](../crates/core) crate (shared with the main
+`kicad-auto-importer` desktop app, [`crates/app`](../crates/app/README.md)),
+while the Mouser/DigiKey API clients, grouping/pricing math, and
+PDF/XLSX generation are this app's own exclusive logic. See the root
 [`README.md`](../README.md#workspace-layout) for how the three pieces
 (`crates/core`, `crates/app`, `bom-app`) fit together.
 

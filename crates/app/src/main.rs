@@ -1,16 +1,23 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod config;
+mod footprint_importer;
+mod global_settings;
 mod icon;
 mod icon_colors;
 mod icon_render;
+mod library_import;
 mod library_import_ui;
 #[cfg(target_os = "linux")]
 mod linux_desktop_integration;
+mod model_importer;
 mod single_instance;
 mod theme;
 mod tray;
 mod ui;
+mod watcher;
 mod window_chrome;
+mod zip_importer;
 
 use ui::MainApp;
 
