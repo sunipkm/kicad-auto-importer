@@ -50,6 +50,24 @@ handling, project/library-table resolution) from `crates/core` — see
   `bom_report`/`populate_bom`/`generate_bom` modules), reusing only
   `crates/core`'s schematic/symbol-library primitives.
 
+## Development
+
+`test-project/` is a fixture KiCad project used to manually smoke-test
+both apps (watcher/import, Populate/Generate BOM). Running the apps
+against it can leave it locally modified, so its tracked files are kept
+under `git update-index --skip-worktree` — Git ignores those local
+edits by default. To intentionally update the fixture:
+
+```sh
+./scripts/test-project.sh unlock   # allow edits/staging/commits
+# ...edit, git add, git commit...
+./scripts/test-project.sh lock     # re-protect
+```
+
+Run `./scripts/test-project.sh reset` to discard local edits and
+restore the committed content (re-locks automatically), or `status` to
+see the current lock state.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).

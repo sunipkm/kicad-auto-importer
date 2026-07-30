@@ -163,20 +163,33 @@ a:hover {
 
 .app-main {
   flex: 1 1 auto;
-  overflow: auto;
+  min-height: 0;
+  overflow: hidden;
   padding: 1.25rem;
+  display: flex;
+  flex-direction: column;
 }
 
 .app-main-centered {
-  height: 100%;
+  flex: 1 1 auto;
   display: flex;
   align-items: center;
   justify-content: center;
 }
 
+/* Holds the tabs + whichever BOM panel is active, so the panel below
+   can flex to fill the rest of `.app-main`'s height. */
+.app-main-project {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
 /* ── Tabs ──────────────────────────────────────────────────────── */
 
 .tabs {
+  flex: 0 0 auto;
   display: flex;
   gap: 0.25rem;
   border-bottom: 1px solid var(--border);
@@ -219,7 +232,20 @@ a:hover {
   margin-top: 1rem;
 }
 
+/* The Populate/Generate BOM panels: fill whatever height `.app-main`
+   leaves for them, and let `.table-scroll` (the only flexible child)
+   grow/shrink to fit — so the progress bar/log/action button below it
+   stay pinned at the bottom of the visible area instead of the whole
+   page growing to fit an expanded log or long table. */
+.panel-card {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
 .panel-header {
+  flex: 0 0 auto;
   display: flex;
   align-items: baseline;
   justify-content: space-between;
@@ -228,6 +254,7 @@ a:hover {
 }
 
 .toolbar {
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   flex-wrap: wrap;
@@ -363,7 +390,8 @@ label {
 /* ── Tables ────────────────────────────────────────────────────── */
 
 .table-scroll {
-  max-height: 22rem;
+  flex: 1 1 auto;
+  min-height: 4rem;
   overflow: auto;
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -412,6 +440,7 @@ table.data-table {
 /* ── Status text / badges ──────────────────────────────────────── */
 
 .status-line {
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   gap: 0.4rem;
@@ -455,6 +484,7 @@ table.data-table {
 /* ── Progress ──────────────────────────────────────────────────── */
 
 .progress-row {
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   gap: 0.6rem;
@@ -472,6 +502,7 @@ progress {
 /* ── Detail log ────────────────────────────────────────────────── */
 
 details.log-panel {
+  flex: 0 0 auto;
   margin-top: 0.75rem;
 }
 
@@ -495,6 +526,7 @@ details.log-panel pre {
 }
 
 .form-actions {
+  flex: 0 0 auto;
   display: flex;
   gap: 0.6rem;
   margin-top: 1rem;

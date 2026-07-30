@@ -99,7 +99,7 @@ function App() {
             </div>
           </div>
         ) : (
-          <>
+          <div className="app-main-project">
             <div className="tabs">
               <button
                 type="button"
@@ -119,7 +119,7 @@ function App() {
 
             {tab === "populate" && <PopulateBom projectDir={info.project_dir} />}
             {tab === "generate" && <GenerateBom projectDir={info.project_dir} />}
-          </>
+          </div>
         )}
       </main>
     </div>

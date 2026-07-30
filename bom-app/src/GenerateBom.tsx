@@ -214,7 +214,7 @@ export function GenerateBom({ projectDir }: { projectDir: string }) {
   }
 
   return (
-    <section className="card">
+    <section className="card panel-card">
       <div className="panel-header">
         <h2>Generate BOM</h2>
         <button type="button" className="btn btn-sm" onClick={loadGroups} disabled={inProgress}>

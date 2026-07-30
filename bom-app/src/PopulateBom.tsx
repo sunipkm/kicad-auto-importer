@@ -268,7 +268,7 @@ export function PopulateBom({ projectDir }: { projectDir: string }) {
   }
 
   return (
-    <section className="card">
+    <section className="card panel-card">
       <div className="panel-header">
         <h2>Populate BOM</h2>
         <button type="button" className="btn btn-sm" onClick={loadRows} disabled={inProgress}>
