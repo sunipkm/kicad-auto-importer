@@ -131,7 +131,7 @@ export function VendorDropdown({
     setLoading(true);
     setError(null);
     try {
-      const credentials = await invoke<PartsCredentials>("load_global_settings");
+      const credentials = await invoke<PartsCredentials>("load_vendor_credentials");
       const result = await invoke<ScoredCandidate[]>("get_scored_candidates", {
         mpn,
         neededQty,

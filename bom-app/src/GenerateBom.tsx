@@ -115,7 +115,7 @@ export function GenerateBom({ projectDir }: { projectDir: string }) {
       setStatus("No parts found on the schematic to price.");
       return;
     }
-    const settings = await invoke<PartsCredentials>("load_global_settings");
+    const settings = await invoke<PartsCredentials>("load_vendor_credentials");
     const digikeyConfigured =
       settings.digikey_client_id.trim() !== "" &&
       settings.digikey_client_secret.trim() !== "";

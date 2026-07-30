@@ -124,10 +124,11 @@ about how they're *packaged/installed*, not a merge of the two apps).
   calls: project/schematic listing, the Populate BOM batch
   (`populate_bom`), the vendor result picker
   (`get_scored_candidates`/`apply_vendor_choice`), the Generate BOM
-  batch (`generate_bom`), the shared settings bridge
-  (`load_global_settings`/`save_global_settings`), and the credential
+  batch (`generate_bom`), the credentials bridge
+  (`load_vendor_credentials`/`save_vendor_credentials`), and the credential
   test buttons (`test_mouser_credentials`/`test_digikey_credentials`).
-  All backed by `kicad_auto_importer_core`.
+  Schematic/symbol-library parsing is backed by `kicad_auto_importer_core`;
+  vendor/pricing logic is bom-app's own.
 - `src/App.tsx` — project picker + top-level layout.
 - `src/SettingsPanel.tsx` — Mouser/DigiKey credential fields and their
   "Test" buttons.

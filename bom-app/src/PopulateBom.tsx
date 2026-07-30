@@ -170,7 +170,7 @@ export function PopulateBom({ projectDir }: { projectDir: string }) {
       setStatus("Select at least one symbol first.");
       return;
     }
-    const settings = await invoke<PartsCredentials>("load_global_settings");
+    const settings = await invoke<PartsCredentials>("load_vendor_credentials");
     const digikeyConfigured =
       settings.digikey_client_id.trim() !== "" &&
       settings.digikey_client_secret.trim() !== "";
