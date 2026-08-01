@@ -15,6 +15,7 @@ use crate::bom_pricing::{self, ChosenOffer, PartGroup, PricedRow};
 use crate::bom_report;
 use crate::parts_lookup::{self, PartsCredentials};
 use crate::populate_bom::{last_checked_age, LAST_CHECKED_PROPERTY, RECHECK_THRESHOLD};
+use kicad_parse::kicad_process;
 use kicad_parse::schematic::SchematicFile;
 use kicad_parse::symbol_importer::set_symbol_property;
 
@@ -42,9 +43,6 @@ pub struct BomBatchRequest {
     pub board_qty: u32,
     pub passive_margin_percent: u32,
     pub force_recheck: bool,
-    /// See `populate_bom::run_lookup_batch`'s identical flag — skips
-    /// saving schematic changes (but not the lookups/report) when set.
-    pub kicad_open: bool,
     pub project_name: String,
     pub pdf_path: Option<PathBuf>,
     pub xlsx_path: Option<PathBuf>,
@@ -55,26 +53,20 @@ pub struct BomBatchRequest {
 /// per reference — the entire efficiency point of grouping identical
 /// parts first — and even that's skipped when a fresh-enough cached
 /// lookup is already sitting on the schematic (see module docs).
-pub fn run_bom_batch(request: BomBatchRequest, mut on_event: impl FnMut(BomEvent)) -> Vec<PricedRow> {
+pub fn run_bom_batch(
+    request: BomBatchRequest,
+    mut on_event: impl FnMut(BomEvent),
+) -> Vec<PricedRow> {
     let BomBatchRequest {
         groups,
         board_qty,
         passive_margin_percent,
         force_recheck,
-        kicad_open,
         project_name,
         pdf_path,
         xlsx_path,
         credentials,
     } = request;
-
-    if kicad_open {
-        on_event(BomEvent::Log(format!(
-            "\u{26a0} '{project_name}' appears to be open in KiCad \u{2014} pricing and \
-             reporting normally, but cached lookup data will NOT be written back until you \
-             close it."
-        )));
-    }
 
     // Every schematic file any group's instances live in, opened once
     // (not per-group/per-reference) — mirrors `populate_bom::run_lookup_batch`'s
@@ -170,9 +162,10 @@ pub fn run_bom_batch(request: BomBatchRequest, mut on_event: impl FnMut(BomEvent
         // instance in the group — success or failure, same reasoning as
         // Populate BOM's own `run_lookup_batch`: a failed lookup still
         // counts as "checked," so a genuinely-not-found part isn't
-        // re-queried every single run. Skipped entirely if KiCad has the
-        // project open, same as Populate BOM.
-        if !from_cache && !kicad_open {
+        // re-queried every single run. This only patches the in-memory
+        // node; whether it actually reaches disk is decided per-file,
+        // fresh, right before the save below.
+        if !from_cache {
             for (path, uuid) in &group.instances {
                 let Some(sch) = sch_files.get_mut(path) else {
                     continue;
@@ -242,21 +235,24 @@ pub fn run_bom_batch(request: BomBatchRequest, mut on_event: impl FnMut(BomEvent
         });
     }
 
-    if kicad_open {
-        on_event(BomEvent::Log(
-            "\u{23f8} Skipped saving schematic changes \u{2014} KiCad has this project open."
-                .to_string(),
-        ));
-    } else {
-        for (path, sch) in &sch_files {
-            if sch.has_pending_changes() {
-                if let Err(exc) = sch.save() {
-                    on_event(BomEvent::Log(format!(
-                        "\u{2718} Could not save '{}': {exc}",
-                        path.display()
-                    )));
-                }
-            }
+    // Rechecked fresh here, per file, right before actually writing —
+    // not once upfront for the whole (potentially long) pricing batch,
+    // and not for the project as a whole — see `populate_bom::
+    // run_lookup_batch`'s identical per-write, per-file check.
+    for (path, sch) in &sch_files {
+        if !sch.has_pending_changes() {
+            continue;
+        }
+        if kicad_process::file_is_locked(path) {
+            on_event(BomEvent::Log(format!(
+                "\u{23f8} Skipped saving '{}' \u{2014} KiCad has this file open.",
+                path.display()
+            )));
+        } else if let Err(exc) = sch.save() {
+            on_event(BomEvent::Log(format!(
+                "\u{2718} Could not save '{}': {exc}",
+                path.display()
+            )));
         }
     }
 

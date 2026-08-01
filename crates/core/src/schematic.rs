@@ -120,9 +120,9 @@ pub fn find_root_schematic(project_dir: &Path) -> Option<PathBuf> {
 /// Walk `project_dir`'s root schematic and every hierarchical sub-sheet
 /// it (transitively) references, collecting every placed symbol
 /// instance that would actually appear in a BOM: symbols with
-/// `(in_bom no)` and KiCad's own auto-generated non-BOM references
-/// (`#PWR...`, `#FLG...`, ...) are skipped, same as KiCad's own BOM
-/// export.
+/// `(in_bom no)`, symbols marked `(dnp yes)` ("Do Not Populate"), and
+/// KiCad's own auto-generated non-BOM references (`#PWR...`, `#FLG...`,
+/// ...) are skipped, same as KiCad's own BOM export.
 pub fn load_schematic_symbols(project_dir: &Path, mut log: impl FnMut(&str)) -> Vec<PlacedSymbol> {
     let Some(root) = find_root_schematic(project_dir) else {
         log("  \u{26a0} No root schematic (.kicad_sch matching the project) found.");
@@ -187,6 +187,14 @@ fn collect_from_file(
             .map(|a| a.text() != "no")
             .unwrap_or(true);
         if !in_bom {
+            continue;
+        }
+        let dnp = sym
+            .find(&["dnp"])
+            .and_then(|n| n.first_atom())
+            .map(|a| a.text() == "yes")
+            .unwrap_or(false);
+        if dnp {
             continue;
         }
         let reference = property_value(sym, "Reference");
@@ -553,6 +561,42 @@ mod tests {
         assert_eq!(rows[0].lib_id, "Device:R");
         assert_eq!(rows[0].symbol_name(), "R");
         assert_eq!(rows[0].library(), "Device");
+    }
+
+    #[test]
+    fn skips_symbols_marked_do_not_populate() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("demo.kicad_pro"), "{}").unwrap();
+        fs::write(
+            dir.path().join("demo.kicad_sch"),
+            r#"(kicad_sch (version 20231120)
+	(symbol
+		(lib_id "Device:R")
+		(at 100 100 0)
+		(unit 1)
+		(in_bom yes)
+		(on_board yes)
+		(dnp yes)
+		(uuid "77777777-7777-7777-7777-777777777777")
+		(property "Reference" "R1" (at 0 0 0))
+	)
+	(symbol
+		(lib_id "Device:R")
+		(at 200 100 0)
+		(unit 1)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(uuid "88888888-8888-8888-8888-888888888888")
+		(property "Reference" "R2" (at 0 0 0))
+	)
+)"#,
+        )
+        .unwrap();
+
+        let rows = load_schematic_symbols(dir.path(), |_| {});
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].reference, "R2");
     }
 
     #[test]

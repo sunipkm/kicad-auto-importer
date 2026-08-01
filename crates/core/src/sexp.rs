@@ -527,7 +527,10 @@ mod tests {
                 Atom::Quoted("R_*".into()),
             ],
         );
-        assert_eq!(SexpNode::render(&filters), r#"(property ki_fp_filters "R_*")"#);
+        assert_eq!(
+            SexpNode::render(&filters),
+            r#"(property ki_fp_filters "R_*")"#
+        );
     }
 
     #[test]

@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 
 use crate::bom_report::{self, ReportRow};
 use crate::parts_lookup::{self, PartsCredentials};
+use kicad_parse::kicad_process;
 use kicad_parse::schematic::SchematicFile;
 use kicad_parse::sexp::SexpNode;
 use kicad_parse::symbol_importer::{get_symbol_property, resolve_mpn, set_symbol_property};
@@ -72,33 +73,28 @@ pub struct SelectedRow {
 /// courtesy both argue against re-fetching a part's stock status every
 /// time the button is clicked.
 ///
-/// If `kicad_open` is set (see `kicad_process::project_open_in_kicad`,
-/// checked by the caller before spawning this batch), every schematic
-/// file's final `.save()` is skipped — lookups, the in-memory property
-/// patch, and the PDF report all still happen normally, since the
-/// vendor API calls are already spent and the report is still useful;
-/// only the on-disk write KiCad's own already-open copy would otherwise
-/// silently clobber is held back. Because nothing hits disk in that
-/// case, the `Last Checked` gate isn't persisted either, so the next
-/// run (once KiCad is closed) retries those same parts cleanly instead
-/// of treating a blocked write as "checked".
+/// Right before each schematic file's final `.save()`, freshly rechecks
+/// `kicad_process::file_is_locked` on that exact file and skips just its
+/// save if KiCad has it locked — lookups, the in-memory property patch,
+/// and the PDF report all still happen normally, since the vendor API
+/// calls are already spent and the report is still useful; only the
+/// on-disk write KiCad's own already-open copy would otherwise silently
+/// clobber is held back. The check happens at the moment of the write,
+/// per file, not once upfront for the whole (potentially long) batch or
+/// for the project as a whole, so a sheet closed in KiCad partway
+/// through a run still gets saved, and a batch touching several sheets
+/// only skips the ones actually still locked. Because nothing hits disk
+/// in the skipped case, the `Last Checked` gate isn't persisted either,
+/// so the next run (once that sheet is closed) retries those same parts
+/// cleanly instead of treating a blocked write as "checked".
 pub fn run_lookup_batch(
     selected: Vec<SelectedRow>,
     project_name: String,
     report_path: PathBuf,
     force: bool,
-    kicad_open: bool,
     credentials: PartsCredentials,
     mut on_event: impl FnMut(LookupEvent),
 ) {
-    if kicad_open {
-        on_event(LookupEvent::Log(format!(
-            "\u{26a0} '{project_name}' appears to be open in KiCad \u{2014} looking up and \
-             reporting stock/lifecycle info, but schematic changes will NOT be written back \
-             until you close it."
-        )));
-    }
-
     // One shared timestamp for the whole batch — a run takes seconds to
     // low minutes, so there's no meaningful staleness difference between
     // rows checked at the start vs. the end of it.
@@ -297,9 +293,9 @@ pub fn run_lookup_batch(
         }
 
         if sch.has_pending_changes() {
-            if kicad_open {
+            if kicad_process::file_is_locked(&path) {
                 on_event(LookupEvent::Log(format!(
-                    "\u{23f8} Skipped saving '{}' \u{2014} KiCad has this project open.",
+                    "\u{23f8} Skipped saving '{}' \u{2014} KiCad has this file open.",
                     path.display()
                 )));
             } else if let Err(exc) = sch.save() {

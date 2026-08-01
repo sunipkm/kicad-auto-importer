@@ -10,14 +10,14 @@
 //! generation) — logic exclusive to this app, not shared with the egui
 //! `kicad-auto-importer` desktop app.
 
-#[cfg(target_os = "linux")]
-mod linux_desktop_integration;
 mod bom_pricing;
 mod bom_report;
 pub mod digikey;
 mod generate_bom;
 mod http_agent;
 mod interactive_bom;
+#[cfg(target_os = "linux")]
+mod linux_desktop_integration;
 pub mod mouser;
 mod parts_cache;
 mod parts_lookup;
@@ -285,7 +285,11 @@ fn get_scored_candidates(
 /// fresh `Last Checked` so a subsequent Populate BOM run within the 24h
 /// window doesn't immediately re-query and potentially overwrite this
 /// choice with an auto-picked one. `chosen` empty is a no-op success
-/// (nothing to pin).
+/// (nothing to pin). Checks `kicad_process::file_is_locked` on this
+/// exact file right before the write — same per-write, per-file check
+/// as `populate_bom`/`generate_bom` — since this single-instance write
+/// can otherwise race straight past KiCad's own already-open copy of
+/// the file.
 #[tauri::command]
 fn apply_vendor_choice(
     sch_path: String,
@@ -297,7 +301,7 @@ fn apply_vendor_choice(
         return Ok(());
     };
 
-    let mut sch = SchematicFile::open(sch_path).map_err(|e| e.to_string())?;
+    let mut sch = SchematicFile::open(&sch_path).map_err(|e| e.to_string())?;
     let mut node = sch
         .get_symbol_node(&uuid)
         .ok_or_else(|| "symbol no longer on the schematic".to_string())?;
@@ -308,13 +312,22 @@ fn apply_vendor_choice(
         &chrono::Utc::now().to_rfc3339(),
     );
     sch.patch_symbol(&uuid, &node);
+
+    if kicad_process::file_is_locked(std::path::Path::new(&sch_path)) {
+        return Err(
+            "KiCad has this file open \u{2014} close it first, then try again.".to_string(),
+        );
+    }
     sch.save().map_err(|e| e.to_string())
 }
 
-/// See `kicad_process`'s own docs — KiCad locks a project as a whole,
-/// not per individual `.kicad_sch`. The frontend calls this before
-/// `populate_bom` to warn the user, the same way the egui app's
-/// `look_up_selected` does with an `rfd::MessageDialog`.
+/// A coarse, project-wide, advisory-only heads-up — see
+/// `kicad_process::project_open_in_kicad`'s own docs for why the actual
+/// per-write gating (`populate_bom`/`generate_bom`/`apply_vendor_choice`)
+/// uses the more precise `kicad_process::file_is_locked` instead. The
+/// frontend calls this before `populate_bom` to warn the user, the same
+/// way the egui app's `look_up_selected` does with an
+/// `rfd::MessageDialog`.
 #[tauri::command]
 fn check_kicad_open(project_dir: String) -> bool {
     kicad_process::project_open_in_kicad(std::path::Path::new(&project_dir))
@@ -389,7 +402,6 @@ fn populate_bom(
     selected_indices: Vec<usize>,
     force_recheck: bool,
     report_path: String,
-    kicad_open: bool,
     credentials: PartsCredentials,
 ) {
     std::thread::spawn(move || {
@@ -418,7 +430,6 @@ fn populate_bom(
             project_name,
             std::path::PathBuf::from(report_path),
             force_recheck,
-            kicad_open,
             credentials,
             move |event| {
                 let _ = app.emit("populate-bom-event", PopulateBomEvent::from(event));
@@ -523,7 +534,6 @@ fn generate_bom(
     board_qty: u32,
     passive_margin_percent: u32,
     force_recheck: bool,
-    kicad_open: bool,
     pdf_path: Option<String>,
     xlsx_path: Option<String>,
     credentials: PartsCredentials,
@@ -543,7 +553,6 @@ fn generate_bom(
             board_qty: board_qty.max(1),
             passive_margin_percent,
             force_recheck,
-            kicad_open,
             project_name: project_name.clone(),
             pdf_path: pdf_path.map(std::path::PathBuf::from),
             xlsx_path: xlsx_path.map(std::path::PathBuf::from),
@@ -590,7 +599,9 @@ fn generate_bom(
         // Re-emit Done with the correct interactive_bom_available flag.
         let _ = app.emit(
             "generate-bom-event",
-            GenerateBomEvent::InteractiveBomReady { available: ibom_available },
+            GenerateBomEvent::InteractiveBomReady {
+                available: ibom_available,
+            },
         );
     });
 }
@@ -606,7 +617,9 @@ fn open_interactive_bom(app: AppHandle) -> Result<(), String> {
         .try_state::<InteractiveBomState>()
         .ok_or("Interactive BOM state not initialised")?;
     let guard = state.0.lock().unwrap();
-    let session = guard.as_ref().ok_or("No interactive BOM has been generated yet")?;
+    let session = guard
+        .as_ref()
+        .ok_or("No interactive BOM has been generated yet")?;
 
     let html_path = std::env::temp_dir().join("bom-app-ibom.html");
     std::fs::write(&html_path, &session.html).map_err(|e| e.to_string())?;

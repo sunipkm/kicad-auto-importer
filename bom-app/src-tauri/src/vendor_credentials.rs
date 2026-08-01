@@ -52,8 +52,7 @@ impl VendorCredentials {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let text =
-            serde_json::to_string_pretty(self).expect("VendorCredentials always serializes");
+        let text = serde_json::to_string_pretty(self).expect("VendorCredentials always serializes");
         fs::write(path, text)
     }
 }

@@ -212,7 +212,6 @@ export function GenerateBom({ projectDir }: { projectDir: string }) {
       boardQty,
       passiveMarginPercent,
       forceRecheck,
-      kicadOpen,
       pdfPath,
       xlsxPath,
       credentials,

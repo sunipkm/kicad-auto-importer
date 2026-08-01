@@ -44,16 +44,29 @@ impl BBox {
     }
 
     fn expand(&mut self, x: f64, y: f64) {
-        if x < self.minx { self.minx = x; }
-        if y < self.miny { self.miny = y; }
-        if x > self.maxx { self.maxx = x; }
-        if y > self.maxy { self.maxy = y; }
+        if x < self.minx {
+            self.minx = x;
+        }
+        if y < self.miny {
+            self.miny = y;
+        }
+        if x > self.maxx {
+            self.maxx = x;
+        }
+        if y > self.maxy {
+            self.maxy = y;
+        }
     }
 }
 
 impl Default for BBox {
     fn default() -> Self {
-        BBox { minx: 0.0, miny: 0.0, maxx: 100.0, maxy: 100.0 }
+        BBox {
+            minx: 0.0,
+            miny: 0.0,
+            maxx: 100.0,
+            maxy: 100.0,
+        }
     }
 }
 
@@ -145,8 +158,14 @@ pub enum PadShape {
     Rect,
     Oval,
     Circle,
-    Roundrect { rratio: f64 },
-    Chamfrect { rratio: f64, chamfpos: u8, chamfratio: f64 },
+    Roundrect {
+        rratio: f64,
+    },
+    Chamfrect {
+        rratio: f64,
+        chamfpos: u8,
+        chamfratio: f64,
+    },
     Custom,
 }
 
@@ -330,7 +349,12 @@ impl PcbBoard {
             .into_iter()
             .filter_map(Footprint::from_sexp)
             .collect();
-        PcbBoard { footprints, edges, edges_bbox, metadata }
+        PcbBoard {
+            footprints,
+            edges,
+            edges_bbox,
+            metadata,
+        }
     }
 
     /// Collect all top-level graphic items on `Edge.Cuts` and their bbox.
@@ -339,7 +363,9 @@ impl PcbBoard {
         let mut bbox = BBox::empty();
 
         for item in root.find_all("gr_line") {
-            if node_layer(item) != "Edge.Cuts" { continue; }
+            if node_layer(item) != "Edge.Cuts" {
+                continue;
+            }
             let start = node_xy(item, "start");
             let end = node_xy(item, "end");
             let width = stroke_width(item);
@@ -348,28 +374,43 @@ impl PcbBoard {
             drawings.push(Drawing::Segment { start, end, width });
         }
         for item in root.find_all("gr_rect") {
-            if node_layer(item) != "Edge.Cuts" { continue; }
+            if node_layer(item) != "Edge.Cuts" {
+                continue;
+            }
             let start = node_xy(item, "start");
             let end = node_xy(item, "end");
             let width = stroke_width(item);
-            for (x, y) in [(start[0], start[1]), (start[0], end[1]),
-                            (end[0], start[1]), (end[0], end[1])] {
+            for (x, y) in [
+                (start[0], start[1]),
+                (start[0], end[1]),
+                (end[0], start[1]),
+                (end[0], end[1]),
+            ] {
                 bbox.expand(x, y);
             }
             drawings.push(Drawing::Rect { start, end, width });
         }
         for item in root.find_all("gr_circle") {
-            if node_layer(item) != "Edge.Cuts" { continue; }
+            if node_layer(item) != "Edge.Cuts" {
+                continue;
+            }
             let center = node_xy(item, "center");
             let radius = dist(center, node_xy(item, "end"));
             let width = stroke_width(item);
             let filled = node_bool_flag(item, "fill", "yes");
             bbox.expand(center[0] - radius, center[1] - radius);
             bbox.expand(center[0] + radius, center[1] + radius);
-            drawings.push(Drawing::Circle { center, radius, filled, width });
+            drawings.push(Drawing::Circle {
+                center,
+                radius,
+                filled,
+                width,
+            });
         }
         for item in root.find_all("gr_arc") {
-            if node_layer(item) != "Edge.Cuts" { continue; }
+            if node_layer(item) != "Edge.Cuts" {
+                continue;
+            }
             if let Some(d) = Drawing::arc_from_sexp(item, stroke_width(item)) {
                 if let Drawing::Arc { center, radius, .. } = &d {
                     bbox.expand(center[0] - radius, center[1] - radius);
@@ -379,13 +420,21 @@ impl PcbBoard {
             }
         }
         for item in root.find_all("gr_poly") {
-            if node_layer(item) != "Edge.Cuts" { continue; }
-            if let Some(d) = Drawing::poly_from_sexp(item, [0.0, 0.0], 0.0, stroke_width(item), &mut bbox) {
+            if node_layer(item) != "Edge.Cuts" {
+                continue;
+            }
+            if let Some(d) =
+                Drawing::poly_from_sexp(item, [0.0, 0.0], 0.0, stroke_width(item), &mut bbox)
+            {
                 drawings.push(d);
             }
         }
 
-        let final_bbox = if bbox.is_valid() { bbox } else { BBox::default() };
+        let final_bbox = if bbox.is_valid() {
+            bbox
+        } else {
+            BBox::default()
+        };
         (drawings, final_bbox)
     }
 }
@@ -394,114 +443,134 @@ impl PcbBoard {
 
 impl Footprint {
     fn from_sexp(fp: &SexpNode) -> Option<Self> {
-    let layer_str = fp.find(&["layer"])
-        .and_then(|n| n.first_atom())
-        .map(|a| a.text().to_string())
-        .unwrap_or_default();
-    let side = Side::from_layer(&layer_str)?;
+        let layer_str = fp
+            .find(&["layer"])
+            .and_then(|n| n.first_atom())
+            .map(|a| a.text().to_string())
+            .unwrap_or_default();
+        let side = Side::from_layer(&layer_str)?;
 
-    let (pos, fp_angle) = parse_at(fp);
-    let reference = fp_property(fp, "Reference");
-    let value = fp_property(fp, "Value");
-    let footprint_type = fp.first_atom().map(|a| a.text().to_string()).unwrap_or_default();
+        let (pos, fp_angle) = parse_at(fp);
+        let reference = fp_property(fp, "Reference");
+        let value = fp_property(fp, "Value");
+        let footprint_type = fp
+            .first_atom()
+            .map(|a| a.text().to_string())
+            .unwrap_or_default();
 
-    // ── pin1 detection ────────────────────────────────────────────────────
-    const PIN1_NAMES: &[&str] = &["1", "A", "A1", "P1", "PAD1"];
-    let pad_nodes = fp.find_all("pad");
-    let has_standard_pin1 = pad_nodes.iter().any(|p| {
-        pad_number_str(p)
-            .map(|n| PIN1_NAMES.contains(&n.as_str()))
-            .unwrap_or(false)
-    });
-    let lex_min_name: Option<String> = if !has_standard_pin1 {
-        pad_nodes.iter()
-            .filter_map(|p| pad_number_str(p))
-            .min()
-    } else {
-        None
-    };
+        // ── pin1 detection ────────────────────────────────────────────────────
+        const PIN1_NAMES: &[&str] = &["1", "A", "A1", "P1", "PAD1"];
+        let pad_nodes = fp.find_all("pad");
+        let has_standard_pin1 = pad_nodes.iter().any(|p| {
+            pad_number_str(p)
+                .map(|n| PIN1_NAMES.contains(&n.as_str()))
+                .unwrap_or(false)
+        });
+        let lex_min_name: Option<String> = if !has_standard_pin1 {
+            pad_nodes.iter().filter_map(|p| pad_number_str(p)).min()
+        } else {
+            None
+        };
 
-    // ── parse pads + compute local AABB ───────────────────────────────────
-    let mut local_minx = f64::MAX;
-    let mut local_miny = f64::MAX;
-    let mut local_maxx = f64::MIN;
-    let mut local_maxy = f64::MIN;
+        // ── parse pads + compute local AABB ───────────────────────────────────
+        let mut local_minx = f64::MAX;
+        let mut local_miny = f64::MAX;
+        let mut local_maxx = f64::MIN;
+        let mut local_maxy = f64::MIN;
 
-    let pads: Vec<Pad> = pad_nodes
-        .iter()
-        .filter_map(|p| {
-            let num = pad_number_str(p).unwrap_or_default();
-            let pin1 = if has_standard_pin1 {
-                PIN1_NAMES.contains(&num.as_str())
-            } else {
-                lex_min_name.as_deref() == Some(&num)
-            };
+        let pads: Vec<Pad> = pad_nodes
+            .iter()
+            .filter_map(|p| {
+                let num = pad_number_str(p).unwrap_or_default();
+                let pin1 = if has_standard_pin1 {
+                    PIN1_NAMES.contains(&num.as_str())
+                } else {
+                    lex_min_name.as_deref() == Some(&num)
+                };
 
-            // Accumulate local AABB (pad `(at ...)` is in footprint-local space)
-            let (local_pt, _) = parse_at(p);
-            let size_node = p.find(&["size"]);
-            let pw = size_node.and_then(|n| n.children.first()).and_then(atom_f64).unwrap_or(1.0);
-            let ph = size_node.and_then(|n| n.children.get(1)).and_then(atom_f64).unwrap_or(1.0);
-            if local_pt[0] - pw / 2.0 < local_minx { local_minx = local_pt[0] - pw / 2.0; }
-            if local_pt[1] - ph / 2.0 < local_miny { local_miny = local_pt[1] - ph / 2.0; }
-            if local_pt[0] + pw / 2.0 > local_maxx { local_maxx = local_pt[0] + pw / 2.0; }
-            if local_pt[1] + ph / 2.0 > local_maxy { local_maxy = local_pt[1] + ph / 2.0; }
+                // Accumulate local AABB (pad `(at ...)` is in footprint-local space)
+                let (local_pt, _) = parse_at(p);
+                let size_node = p.find(&["size"]);
+                let pw = size_node
+                    .and_then(|n| n.children.first())
+                    .and_then(atom_f64)
+                    .unwrap_or(1.0);
+                let ph = size_node
+                    .and_then(|n| n.children.get(1))
+                    .and_then(atom_f64)
+                    .unwrap_or(1.0);
+                if local_pt[0] - pw / 2.0 < local_minx {
+                    local_minx = local_pt[0] - pw / 2.0;
+                }
+                if local_pt[1] - ph / 2.0 < local_miny {
+                    local_miny = local_pt[1] - ph / 2.0;
+                }
+                if local_pt[0] + pw / 2.0 > local_maxx {
+                    local_maxx = local_pt[0] + pw / 2.0;
+                }
+                if local_pt[1] + ph / 2.0 > local_maxy {
+                    local_maxy = local_pt[1] + ph / 2.0;
+                }
 
-            Pad::from_sexp(p, pos, fp_angle, pin1)
+                Pad::from_sexp(p, pos, fp_angle, pin1)
+            })
+            .collect();
+
+        let (relpos, bbox_size) = if local_minx <= local_maxx {
+            (
+                [local_minx, local_miny],
+                [local_maxx - local_minx, local_maxy - local_miny],
+            )
+        } else {
+            ([-1.0, -1.0], [2.0, 2.0]) // fallback for footprints with no pads
+        };
+
+        let bbox = FootprintBBox {
+            pos,
+            angle: fp_angle,
+            relpos,
+            size: bbox_size,
+        };
+
+        Some(Footprint {
+            reference,
+            footprint_type,
+            value,
+            layer: side,
+            center: pos,
+            angle: fp_angle,
+            bbox,
+            pads,
         })
-        .collect();
-
-    let (relpos, bbox_size) = if local_minx <= local_maxx {
-        (
-            [local_minx, local_miny],
-            [local_maxx - local_minx, local_maxy - local_miny],
-        )
-    } else {
-        ([-1.0, -1.0], [2.0, 2.0]) // fallback for footprints with no pads
-    };
-
-    let bbox = FootprintBBox {
-        pos,
-        angle: fp_angle,
-        relpos,
-        size: bbox_size,
-    };
-
-        Some(Footprint { reference, footprint_type, value, layer: side, center: pos, angle: fp_angle, bbox, pads })
     }
 }
 
 // ── Pad ───────────────────────────────────────────────────────────────────
 
 impl Pad {
-    fn from_sexp(
-        pad: &SexpNode,
-        fp_pos: [f64; 2],
-        fp_angle: f64,
-        pin1: bool,
-    ) -> Option<Self> {
-    // Positional atoms: pad_number, type, shape (first three unkeyed atoms)
-    let pad_number = pad_number_str(pad).unwrap_or_default();
-    let type_str = positional_atom(pad, 1).unwrap_or("smd");
-    let shape_str = positional_atom(pad, 2).unwrap_or("rect");
+    fn from_sexp(pad: &SexpNode, fp_pos: [f64; 2], fp_angle: f64, pin1: bool) -> Option<Self> {
+        // Positional atoms: pad_number, type, shape (first three unkeyed atoms)
+        let pad_number = pad_number_str(pad).unwrap_or_default();
+        let type_str = positional_atom(pad, 1).unwrap_or("smd");
+        let shape_str = positional_atom(pad, 2).unwrap_or("rect");
 
-    let pad_type = match type_str {
-        "thru_hole" | "np_thru_hole" => PadType::Th,
-        _ => PadType::Smd,
-    };
+        let pad_type = match type_str {
+            "thru_hole" | "np_thru_hole" => PadType::Th,
+            _ => PadType::Smd,
+        };
 
-    let (local_pos, pad_angle) = parse_at(pad);
-    // Negate fp_angle: ibom's renderer positions a footprint-local point via
-    // canvas `rotate(-angle)` (see render.js's `drawFootprint`/bbox handling),
-    // so absolute positions here must use the same rotation sense, not the
-    // "plain" CCW-for-Y-up sense `rotate()` documents for its own contract.
-    let abs_pos = translate(rotate(local_pos, -fp_angle), fp_pos);
+        let (local_pos, pad_angle) = parse_at(pad);
+        // Negate fp_angle: ibom's renderer positions a footprint-local point via
+        // canvas `rotate(-angle)` (see render.js's `drawFootprint`/bbox handling),
+        // so absolute positions here must use the same rotation sense, not the
+        // "plain" CCW-for-Y-up sense `rotate()` documents for its own contract.
+        let abs_pos = translate(rotate(local_pos, -fp_angle), fp_pos);
 
-    let size_node = pad.find(&["size"])?;
-    let pw = size_node.children.first().and_then(atom_f64)?;
-    let ph = size_node.children.get(1).and_then(atom_f64)?;
+        let size_node = pad.find(&["size"])?;
+        let pw = size_node.children.first().and_then(atom_f64)?;
+        let ph = size_node.children.get(1).and_then(atom_f64)?;
 
-let layers = Pad::layers_from_sexp(pad);
+        let layers = Pad::layers_from_sexp(pad);
         let shape = Pad::shape_from_sexp(pad, shape_str);
         let (drill_shape, drill_size) = Pad::drill_from_sexp(pad, &pad_type);
         let net = Pad::net_from_sexp(pad);
@@ -522,68 +591,82 @@ let layers = Pad::layers_from_sexp(pad);
     }
 
     fn layers_from_sexp(pad: &SexpNode) -> Vec<String> {
-    let mut sides = Vec::<String>::new();
-    if let Some(ln) = pad.find(&["layers"]) {
-        for c in &ln.children {
-            if let Child::Atom(a) = c {
-                let t = a.text();
-                if (t.starts_with("F.") || t == "F") && !sides.contains(&"F".into()) {
-                    sides.push("F".into());
-                }
-                if (t.starts_with("B.") || t == "B") && !sides.contains(&"B".into()) {
-                    sides.push("B".into());
-                }
-                // "*.Cu" / "*" / "*.Mask" → both sides
-                if t.starts_with("*.") || t == "*" {
-                    if !sides.contains(&"F".into()) { sides.push("F".into()); }
-                    if !sides.contains(&"B".into()) { sides.push("B".into()); }
+        let mut sides = Vec::<String>::new();
+        if let Some(ln) = pad.find(&["layers"]) {
+            for c in &ln.children {
+                if let Child::Atom(a) = c {
+                    let t = a.text();
+                    if (t.starts_with("F.") || t == "F") && !sides.contains(&"F".into()) {
+                        sides.push("F".into());
+                    }
+                    if (t.starts_with("B.") || t == "B") && !sides.contains(&"B".into()) {
+                        sides.push("B".into());
+                    }
+                    // "*.Cu" / "*" / "*.Mask" → both sides
+                    if t.starts_with("*.") || t == "*" {
+                        if !sides.contains(&"F".into()) {
+                            sides.push("F".into());
+                        }
+                        if !sides.contains(&"B".into()) {
+                            sides.push("B".into());
+                        }
+                    }
                 }
             }
         }
-    }
-        if sides.is_empty() { sides.push("F".into()); }
+        if sides.is_empty() {
+            sides.push("F".into());
+        }
         sides
     }
 
     fn shape_from_sexp(pad: &SexpNode, shape_str: &str) -> PadShape {
-    match shape_str {
-        "oval" => PadShape::Oval,
-        "circle" => PadShape::Circle,
-        "roundrect" => {
-            let rratio = pad.find(&["roundrect_rratio"])
-                .and_then(|n| n.first_atom())
-                .and_then(|a| a.text().parse::<f64>().ok())
-                .unwrap_or(0.0);
-            PadShape::Roundrect { rratio }
-        }
-        "chamfrect" => {
-            let rratio = pad.find(&["roundrect_rratio"])
-                .and_then(|n| n.first_atom())
-                .and_then(|a| a.text().parse::<f64>().ok())
-                .unwrap_or(0.0);
-            let chamfratio = pad.find(&["chamfer_ratio"])
-                .and_then(|n| n.first_atom())
-                .and_then(|a| a.text().parse::<f64>().ok())
-                .unwrap_or(0.0);
-            let chamfpos = pad.find(&["chamfer"])
-                .map(|n| {
-                    let mut bits = 0u8;
-                    for c in &n.children {
-                        if let Child::Atom(a) = c {
-                            bits |= match a.text() {
-                                "top_left" => 1,
-                                "top_right" => 2,
-                                "bottom_left" => 4,
-                                "bottom_right" => 8,
-                                _ => 0,
-                            };
+        match shape_str {
+            "oval" => PadShape::Oval,
+            "circle" => PadShape::Circle,
+            "roundrect" => {
+                let rratio = pad
+                    .find(&["roundrect_rratio"])
+                    .and_then(|n| n.first_atom())
+                    .and_then(|a| a.text().parse::<f64>().ok())
+                    .unwrap_or(0.0);
+                PadShape::Roundrect { rratio }
+            }
+            "chamfrect" => {
+                let rratio = pad
+                    .find(&["roundrect_rratio"])
+                    .and_then(|n| n.first_atom())
+                    .and_then(|a| a.text().parse::<f64>().ok())
+                    .unwrap_or(0.0);
+                let chamfratio = pad
+                    .find(&["chamfer_ratio"])
+                    .and_then(|n| n.first_atom())
+                    .and_then(|a| a.text().parse::<f64>().ok())
+                    .unwrap_or(0.0);
+                let chamfpos = pad
+                    .find(&["chamfer"])
+                    .map(|n| {
+                        let mut bits = 0u8;
+                        for c in &n.children {
+                            if let Child::Atom(a) = c {
+                                bits |= match a.text() {
+                                    "top_left" => 1,
+                                    "top_right" => 2,
+                                    "bottom_left" => 4,
+                                    "bottom_right" => 8,
+                                    _ => 0,
+                                };
+                            }
                         }
-                    }
-                    bits
-                })
-                .unwrap_or(0);
-            PadShape::Chamfrect { rratio, chamfpos, chamfratio }
-        }
+                        bits
+                    })
+                    .unwrap_or(0);
+                PadShape::Chamfrect {
+                    rratio,
+                    chamfpos,
+                    chamfratio,
+                }
+            }
             // MVP has no true custom-polygon primitive parsing (ibom's
             // renderer needs a `polygons`/`svgpath` field we don't emit) —
             // fall back to the pad's anchor bounding box instead.
@@ -593,23 +676,32 @@ let layers = Pad::layers_from_sexp(pad);
     }
 
     fn drill_from_sexp(pad: &SexpNode, pad_type: &PadType) -> (Option<String>, Option<[f64; 2]>) {
-    if !matches!(pad_type, PadType::Th) {
-        return (None, None);
-    }
-    let Some(dn) = pad.find(&["drill"]) else {
-        return (Some("circle".into()), None);
-    };
+        if !matches!(pad_type, PadType::Th) {
+            return (None, None);
+        }
+        let Some(dn) = pad.find(&["drill"]) else {
+            return (Some("circle".into()), None);
+        };
 
-    // `(drill [oval] diameter [diameter_y] [(offset x y)])`
-    let first = dn.children.first().and_then(|c| if let Child::Atom(a) = c { Some(a.text()) } else { None });
-    if first == Some("oval") {
-        let dx = dn.children.get(1).and_then(atom_f64).unwrap_or(1.0);
-        let dy = dn.children.get(2).and_then(atom_f64).unwrap_or(dx);
-        (Some("oblong".into()), Some([dx, dy]))
-    } else {
-        let d = dn.first_atom().and_then(|a| a.text().parse::<f64>().ok()).unwrap_or(1.0);
-        // Check for a second numeric atom (would make it oblong)
-        let d2 = dn.children.get(1).and_then(atom_f64);
+        // `(drill [oval] diameter [diameter_y] [(offset x y)])`
+        let first = dn.children.first().and_then(|c| {
+            if let Child::Atom(a) = c {
+                Some(a.text())
+            } else {
+                None
+            }
+        });
+        if first == Some("oval") {
+            let dx = dn.children.get(1).and_then(atom_f64).unwrap_or(1.0);
+            let dy = dn.children.get(2).and_then(atom_f64).unwrap_or(dx);
+            (Some("oblong".into()), Some([dx, dy]))
+        } else {
+            let d = dn
+                .first_atom()
+                .and_then(|a| a.text().parse::<f64>().ok())
+                .unwrap_or(1.0);
+            // Check for a second numeric atom (would make it oblong)
+            let d2 = dn.children.get(1).and_then(atom_f64);
             match d2 {
                 Some(dy) => (Some("oblong".into()), Some([d, dy])),
                 None => (Some("circle".into()), Some([d, d])),
@@ -618,12 +710,20 @@ let layers = Pad::layers_from_sexp(pad);
     }
 
     fn net_from_sexp(pad: &SexpNode) -> Option<String> {
-    let net = pad.find(&["net"])?;
-    // KiCad 8+: `(net "name")` — single atom.
-    // KiCad 7-: `(net id "name")` — two atoms; name is second.
-    let atoms: Vec<&str> = net.children.iter()
-        .filter_map(|c| if let Child::Atom(a) = c { Some(a.text()) } else { None })
-        .collect();
+        let net = pad.find(&["net"])?;
+        // KiCad 8+: `(net "name")` — single atom.
+        // KiCad 7-: `(net id "name")` — two atoms; name is second.
+        let atoms: Vec<&str> = net
+            .children
+            .iter()
+            .filter_map(|c| {
+                if let Child::Atom(a) = c {
+                    Some(a.text())
+                } else {
+                    None
+                }
+            })
+            .collect();
         match atoms.as_slice() {
             [name] => Some((*name).to_string()),
             [_, name] => Some((*name).to_string()),
@@ -637,15 +737,21 @@ let layers = Pad::layers_from_sexp(pad);
 impl Drawing {
     /// Convert a KiCad 8+ three-point arc into `Drawing::Arc`.
     fn arc_from_sexp(node: &SexpNode, width: f64) -> Option<Self> {
-    let start = node_xy(node, "start");
-    let mid = node_xy(node, "mid");
-    let end = node_xy(node, "end");
+        let start = node_xy(node, "start");
+        let mid = node_xy(node, "mid");
+        let end = node_xy(node, "end");
 
-    let (center, radius) = arc_circumcircle(start, mid, end)?;
-    let startangle = angle_deg(start, center);
-    let endangle = angle_deg(end, center);
+        let (center, radius) = arc_circumcircle(start, mid, end)?;
+        let startangle = angle_deg(start, center);
+        let endangle = angle_deg(end, center);
 
-        Some(Drawing::Arc { center, radius, startangle, endangle, width })
+        Some(Drawing::Arc {
+            center,
+            radius,
+            startangle,
+            endangle,
+            width,
+        })
     }
 
     /// Parse an `(pts (xy x y) ...)` polygon node into `Drawing::Polygon`.
@@ -656,27 +762,30 @@ impl Drawing {
         width: f64,
         bbox: &mut BBox,
     ) -> Option<Self> {
-    let pts = node.find(&["pts"])?;
-    let points: Vec<[f64; 2]> = pts
-        .find_all("xy")
-        .iter()
-        .map(|xy| {
-            let x = xy.children.first().and_then(atom_f64).unwrap_or(0.0);
-            let y = xy.children.get(1).and_then(atom_f64).unwrap_or(0.0);
-            [x, y]
-        })
-        .collect();
-    if points.is_empty() { return None; }
+        let pts = node.find(&["pts"])?;
+        let points: Vec<[f64; 2]> = pts
+            .find_all("xy")
+            .iter()
+            .map(|xy| {
+                let x = xy.children.first().and_then(atom_f64).unwrap_or(0.0);
+                let y = xy.children.get(1).and_then(atom_f64).unwrap_or(0.0);
+                [x, y]
+            })
+            .collect();
+        if points.is_empty() {
+            return None;
+        }
 
-    for &pt in &points {
-        let abs = translate(rotate(pt, parent_angle), parent_pos);
-        bbox.expand(abs[0], abs[1]);
-    }
+        for &pt in &points {
+            let abs = translate(rotate(pt, parent_angle), parent_pos);
+            bbox.expand(abs[0], abs[1]);
+        }
 
-    let filled = node.find(&["fill"])
-        .and_then(|n| n.first_atom())
-        .map(|a| a.text() != "no" && a.text() != "0")
-        .unwrap_or(true);
+        let filled = node
+            .find(&["fill"])
+            .and_then(|n| n.first_atom())
+            .map(|a| a.text() != "no" && a.text() != "0")
+            .unwrap_or(true);
 
         Some(Drawing::Polygon {
             polygons: vec![points],
@@ -765,7 +874,9 @@ fn parse_at(node: &SexpNode) -> ([f64; 2], f64) {
 
 /// Read `(key x y)` → `[x, y]`.
 fn node_xy(node: &SexpNode, key: &str) -> [f64; 2] {
-    let Some(n) = node.find(&[key]) else { return [0.0, 0.0] };
+    let Some(n) = node.find(&[key]) else {
+        return [0.0, 0.0];
+    };
     let x = n.children.first().and_then(atom_f64).unwrap_or(0.0);
     let y = n.children.get(1).and_then(atom_f64).unwrap_or(0.0);
     [x, y]
@@ -775,11 +886,15 @@ fn node_xy(node: &SexpNode, key: &str) -> [f64; 2] {
 fn stroke_width(node: &SexpNode) -> f64 {
     if let Some(stroke) = node.find(&["stroke"]) {
         if let Some(w) = stroke.find(&["width"]).and_then(|n| n.first_atom()) {
-            if let Ok(v) = w.text().parse::<f64>() { return v; }
+            if let Ok(v) = w.text().parse::<f64>() {
+                return v;
+            }
         }
     }
     if let Some(w) = node.find(&["width"]).and_then(|n| n.first_atom()) {
-        if let Ok(v) = w.text().parse::<f64>() { return v; }
+        if let Ok(v) = w.text().parse::<f64>() {
+            return v;
+        }
     }
     0.0
 }
@@ -812,34 +927,64 @@ fn fp_property(node: &SexpNode, key: &str) -> String {
 
 /// First (key) atom of a `(property key val ...)` node.
 fn prop_key(node: &SexpNode) -> String {
-    node.children.first()
-        .and_then(|c| if let Child::Atom(a) = c { Some(a.text().to_string()) } else { None })
+    node.children
+        .first()
+        .and_then(|c| {
+            if let Child::Atom(a) = c {
+                Some(a.text().to_string())
+            } else {
+                None
+            }
+        })
         .unwrap_or_default()
 }
 
 /// Second (value) atom of a `(property key val ...)` node.
 fn prop_val(node: &SexpNode) -> String {
-    node.children.get(1)
-        .and_then(|c| if let Child::Atom(a) = c { Some(a.text().to_string()) } else { None })
+    node.children
+        .get(1)
+        .and_then(|c| {
+            if let Child::Atom(a) = c {
+                Some(a.text().to_string())
+            } else {
+                None
+            }
+        })
         .unwrap_or_default()
 }
 
 /// The first unkeyed atom of a pad node — its pad number string.
 fn pad_number_str(pad: &SexpNode) -> Option<String> {
-    pad.children.first()
-        .and_then(|c| if let Child::Atom(a) = c { Some(a.text().to_string()) } else { None })
+    pad.children.first().and_then(|c| {
+        if let Child::Atom(a) = c {
+            Some(a.text().to_string())
+        } else {
+            None
+        }
+    })
 }
 
 /// The nth unkeyed (bare/quoted Atom, not a sub-Node) child of a node.
 fn positional_atom(node: &SexpNode, n: usize) -> Option<&str> {
-    node.children.iter()
-        .filter_map(|c| if let Child::Atom(a) = c { Some(a.text()) } else { None })
+    node.children
+        .iter()
+        .filter_map(|c| {
+            if let Child::Atom(a) = c {
+                Some(a.text())
+            } else {
+                None
+            }
+        })
         .nth(n)
 }
 
 /// Extract an f64 from a `Child::Atom`.
 fn atom_f64(c: &Child) -> Option<f64> {
-    if let Child::Atom(a) = c { a.text().parse().ok() } else { None }
+    if let Child::Atom(a) = c {
+        a.text().parse().ok()
+    } else {
+        None
+    }
 }
 
 // ── tests ─────────────────────────────────────────────────────────────────
@@ -870,12 +1015,7 @@ mod tests {
         // Arc from the SOT-23 footprint in the test PCB (local coordinates):
         // start=(0.7,-1), mid=(1.194975,-0.794975), end=(1.4,-0.3)
         // Expected centre ≈ (0.7, -0.3), radius ≈ 0.7
-        let (c, r) = arc_circumcircle(
-            [0.7, -1.0],
-            [1.194975, -0.794975],
-            [1.4, -0.3],
-        )
-        .unwrap();
+        let (c, r) = arc_circumcircle([0.7, -1.0], [1.194975, -0.794975], [1.4, -0.3]).unwrap();
         assert!((c[0] - 0.7).abs() < 1e-3, "cx={}", c[0]);
         assert!((c[1] + 0.3).abs() < 1e-3, "cy={}", c[1]);
         assert!((r - 0.7).abs() < 1e-3, "r={r}");
@@ -943,16 +1083,10 @@ mod tests {
 
     #[test]
     fn find_root_pcb_finds_test_project() {
-        let dir = std::path::Path::new(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../test-project"
-        ));
+        let dir = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../test-project"));
         let found = find_root_pcb(dir);
         assert!(found.is_some(), "find_root_pcb returned None");
-        assert_eq!(
-            found.unwrap().extension().unwrap(),
-            "kicad_pcb"
-        );
+        assert_eq!(found.unwrap().extension().unwrap(), "kicad_pcb");
     }
 
     #[test]
@@ -972,7 +1106,10 @@ mod tests {
         assert!(!board.edges.is_empty(), "no edge drawings parsed");
         // Board outline is a single gr_rect in the test project
         assert!(
-            board.edges.iter().any(|d| matches!(d, Drawing::Rect { .. })),
+            board
+                .edges
+                .iter()
+                .any(|d| matches!(d, Drawing::Rect { .. })),
             "expected at least one Rect edge drawing"
         );
     }
@@ -981,7 +1118,10 @@ mod tests {
     fn parse_test_project_metadata() {
         let board = parse_pcb(test_pcb_path()).expect("parse_pcb failed");
         assert!(!board.metadata.title.is_empty(), "metadata title is empty");
-        assert!(!board.metadata.revision.is_empty(), "metadata revision is empty");
+        assert!(
+            !board.metadata.revision.is_empty(),
+            "metadata revision is empty"
+        );
     }
 
     #[test]
@@ -996,13 +1136,18 @@ mod tests {
             for pad in &fp.pads {
                 assert!(
                     pad.pos[0].is_finite() && pad.pos[1].is_finite(),
-                    "pad in {} has non-finite position", fp.reference
+                    "pad in {} has non-finite position",
+                    fp.reference
                 );
                 assert!(
-                    pad.pos[0] >= bbox.minx - margin && pad.pos[0] <= bbox.maxx + margin
-                    && pad.pos[1] >= bbox.miny - margin && pad.pos[1] <= bbox.maxy + margin,
+                    pad.pos[0] >= bbox.minx - margin
+                        && pad.pos[0] <= bbox.maxx + margin
+                        && pad.pos[1] >= bbox.miny - margin
+                        && pad.pos[1] <= bbox.maxy + margin,
                     "pad pos [{:.3},{:.3}] in {} suspiciously far from board",
-                    pad.pos[0], pad.pos[1], fp.reference
+                    pad.pos[0],
+                    pad.pos[1],
+                    fp.reference
                 );
             }
         }

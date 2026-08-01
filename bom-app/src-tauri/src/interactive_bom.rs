@@ -83,7 +83,10 @@ pub fn build_pcbdata(board: &PcbBoard, priced_rows: &[PricedRow]) -> Value {
             );
         }
 
-        let bom_row: Value = json!(refs.iter().map(|(r, id)| json!([r, id])).collect::<Vec<_>>());
+        let bom_row: Value = json!(refs
+            .iter()
+            .map(|(r, id)| json!([r, id]))
+            .collect::<Vec<_>>());
 
         let f_refs: Vec<Value> = refs
             .iter()
@@ -213,14 +216,25 @@ fn drawing_to_json(d: &Drawing) -> Value {
             "end": end,
             "width": width,
         }),
-        Drawing::Circle { center, radius, width, .. } => json!({
+        Drawing::Circle {
+            center,
+            radius,
+            width,
+            ..
+        } => json!({
             "type": "circle",
             "start": center,
             "radius": radius,
             "filled": 0,
             "width": width,
         }),
-        Drawing::Arc { center, radius, startangle, endangle, width } => json!({
+        Drawing::Arc {
+            center,
+            radius,
+            startangle,
+            endangle,
+            width,
+        } => json!({
             "type": "arc",
             "start": center,
             "radius": radius,
@@ -228,7 +242,13 @@ fn drawing_to_json(d: &Drawing) -> Value {
             "endangle": endangle,
             "width": width,
         }),
-        Drawing::Polygon { polygons, pos, angle, filled, width } => json!({
+        Drawing::Polygon {
+            polygons,
+            pos,
+            angle,
+            filled,
+            width,
+        } => json!({
             "type": "polygon",
             "filled": if *filled { 1 } else { 0 },
             "width": width,
@@ -259,7 +279,6 @@ fn footprint_to_json(fp: &Footprint) -> Value {
 }
 
 fn pad_to_json_real(pad: &Pad) -> Value {
-
     let layers: Vec<&str> = pad.layers.iter().map(String::as_str).collect();
 
     let mut obj = serde_json::Map::new();
@@ -279,7 +298,11 @@ fn pad_to_json_real(pad: &Pad) -> Value {
             let min_dim = pad.size[0].min(pad.size[1]);
             obj.insert("radius".into(), json!(rratio * min_dim / 2.0));
         }
-        PadShape::Chamfrect { rratio, chamfpos, chamfratio } => {
+        PadShape::Chamfrect {
+            rratio,
+            chamfpos,
+            chamfratio,
+        } => {
             let min_dim = pad.size[0].min(pad.size[1]);
             obj.insert("radius".into(), json!(rratio * min_dim / 2.0));
             obj.insert("chamfpos".into(), json!(chamfpos));

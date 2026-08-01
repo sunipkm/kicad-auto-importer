@@ -1,18 +1,33 @@
-//! Best-effort, cross-platform detection of whether a given KiCad
-//! project directory is currently open in a live KiCad process (the
-//! project manager, schematic editor, or PCB editor) — used by
-//! `part_lookup_ui`'s "Populate BOM" to avoid writing straight to a
-//! `.kicad_sch` file on disk while KiCad itself already has that project
-//! loaded in memory: a write we make there is invisible to KiCad's own
-//! copy, and gets silently clobbered the next time the user hits Save
+//! Detecting whether a specific KiCad file is currently open in a live
+//! KiCad editor — used right before this tool writes to a `.kicad_sch`
+//! on disk, to avoid a write that's invisible to KiCad's own in-memory
+//! copy and gets silently clobbered the next time the user hits Save
 //! inside KiCad.
 //!
-//! Built on the `sysinfo` crate rather than hand-rolled per-OS process
-//! introspection (`/proc` parsing on Linux, PEB-reading FFI on Windows),
-//! since it already covers Linux/Windows/macOS through one API. For
-//! every live process whose name matches one of KiCad's own editor
-//! binaries (`kicad`, `eeschema`, `pcbnew`), two independent signals are
-//! checked for whether it's pointed at the target project directory:
+//! [`file_is_locked`] is the precise, per-file signal: KiCad's own
+//! `LOCKFILE` mechanism creates a sibling `~<name>.<ext>.lck` file next
+//! to whichever file an editor (project manager, schematic editor, PCB
+//! editor) currently has open, and removes it on a clean close. Checking
+//! for exactly the file about to be written — not "is the project open
+//! somewhere" — means a project closed in KiCad partway through a run
+//! doesn't block writes to files it's no longer holding, and a laptop
+//! left with an unrelated sheet open doesn't block writes to sheets it
+//! never touched. A `.lck` left behind by a KiCad crash is a known
+//! false-positive KiCad itself is subject to; here that only means a
+//! write gets skipped when it didn't strictly need to be, never the
+//! reverse, so it's an acceptable tradeoff.
+//!
+//! [`project_open_in_kicad`] is a coarser, best-effort fallback signal
+//! for contexts where no specific file is in hand yet — a project-wide
+//! "does any KiCad process appear to have this directory open at all"
+//! check, used only for the frontend's advance heads-up dialog, never to
+//! gate an actual write. Built on the `sysinfo` crate rather than
+//! hand-rolled per-OS process introspection (`/proc` parsing on Linux,
+//! PEB-reading FFI on Windows), since it already covers Linux/Windows/
+//! macOS through one API. For every live process whose name matches one
+//! of KiCad's own editor binaries (`kicad`, `eeschema`, `pcbnew`), two
+//! independent signals are checked for whether it's pointed at the
+//! target project directory:
 //!
 //! 1. The process's working directory (`Process::cwd`) — KiCad's own
 //!    processes set this to the project directory on launch (verified
@@ -27,14 +42,32 @@
 //!
 //! If neither signal is available (permissions, an unsupported platform,
 //! or KiCad simply isn't running), [`project_open_in_kicad`] reports
-//! `false` — a fail-open default. This is a best-effort safety net, not
-//! a guarantee: it never makes Populate BOM refuse to write when it
-//! otherwise would have.
+//! `false` — a fail-open default, acceptable there since it never gates
+//! an actual write, only an advisory dialog.
 
 use std::ffi::OsString;
 use std::path::Path;
 
 use sysinfo::System;
+
+/// KiCad's own `LOCKFILE` naming convention (see `wildcards_and_files_ext`
+/// in KiCad's own source: `LockFilePrefix = "~"`, `LockFileExtension =
+/// "lck"`) — a lock for `dir/name.ext` sits right beside it as
+/// `dir/~name.ext.lck`.
+fn lock_file_path(path: &Path) -> Option<std::path::PathBuf> {
+    let dir = path.parent()?;
+    let name = path.file_name()?.to_string_lossy();
+    Some(dir.join(format!("~{name}.lck")))
+}
+
+/// Whether `path` (a `.kicad_sch`, `.kicad_pcb`, or `.kicad_pro`) has a
+/// live KiCad editor's lock sitting next to it right now — see the
+/// module docs for why this, not [`project_open_in_kicad`], is what
+/// every actual write should check, and why it's checked fresh
+/// immediately before that write rather than once upfront.
+pub fn file_is_locked(path: &Path) -> bool {
+    lock_file_path(path).is_some_and(|lock| lock.is_file())
+}
 
 /// KiCad's own editor process names — case-insensitive, `.exe` stripped
 /// (see [`is_kicad_process_name`]).
@@ -92,6 +125,34 @@ mod tests {
 
     fn cmd(args: &[&str]) -> Vec<OsString> {
         args.iter().map(OsString::from).collect()
+    }
+
+    // ── file_is_locked ────────────────────────────────────────────────
+
+    #[test]
+    fn not_locked_when_no_lock_file_present() {
+        let dir = tempfile::tempdir().unwrap();
+        let sch = dir.path().join("demo.kicad_sch");
+        std::fs::write(&sch, "").unwrap();
+        assert!(!file_is_locked(&sch));
+    }
+
+    #[test]
+    fn locked_when_the_sibling_lck_file_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let sch = dir.path().join("demo.kicad_sch");
+        std::fs::write(&sch, "").unwrap();
+        std::fs::write(dir.path().join("~demo.kicad_sch.lck"), "").unwrap();
+        assert!(file_is_locked(&sch));
+    }
+
+    #[test]
+    fn not_locked_by_an_unrelated_sibling_lock_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let sch = dir.path().join("demo.kicad_sch");
+        std::fs::write(&sch, "").unwrap();
+        std::fs::write(dir.path().join("~other.kicad_sch.lck"), "").unwrap();
+        assert!(!file_is_locked(&sch));
     }
 
     // ── is_kicad_process_name ────────────────────────────────────────

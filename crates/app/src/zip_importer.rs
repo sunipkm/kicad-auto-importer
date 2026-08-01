@@ -54,10 +54,7 @@ pub enum ImportError {
     #[error("symbol library error: {0}")]
     SymbolLibrary(#[from] kicad_parse::symbol_importer::SymbolLibraryError),
     #[error("could not parse source symbol file '{path}': {source}")]
-    SourceSexp {
-        path: PathBuf,
-        source: SexpError,
-    },
+    SourceSexp { path: PathBuf, source: SexpError },
     #[error("zip error: {0}")]
     Zip(#[from] zip::result::ZipError),
 }

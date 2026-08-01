@@ -262,7 +262,6 @@ export function PopulateBom({ projectDir }: { projectDir: string }) {
       selectedIndices: Array.from(checked),
       forceRecheck,
       reportPath,
-      kicadOpen,
       credentials,
     });
   }

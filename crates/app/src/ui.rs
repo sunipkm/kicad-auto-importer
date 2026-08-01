@@ -18,9 +18,7 @@ use crate::theme::{self, ACCENT, DANGER, TITLE_BAR_BG};
 use crate::tray;
 use crate::watcher::{FolderWatcher, WatchEvent};
 use crate::window_chrome;
-use crate::zip_importer::{
-    import_folder, import_zip, validate_model_subdir, ImportSettings,
-};
+use crate::zip_importer::{import_folder, import_zip, validate_model_subdir, ImportSettings};
 
 pub struct MainApp {
     project_path: String, // absolute path to the project directory, or "" if none chosen yet

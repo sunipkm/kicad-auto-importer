@@ -28,7 +28,10 @@ impl Default for XlsxColumnsConfig {
         Self {
             entries: XlsxColumn::ALL
                 .iter()
-                .map(|&col| XlsxColumnEntry { column: col, visible: true })
+                .map(|&col| XlsxColumnEntry {
+                    column: col,
+                    visible: true,
+                })
                 .collect(),
         }
     }
@@ -51,7 +54,10 @@ impl XlsxColumnsConfig {
         // Add any column not yet in the saved config (forward-compatibility).
         for &col in XlsxColumn::ALL {
             if !config.entries.iter().any(|e| e.column == col) {
-                config.entries.push(XlsxColumnEntry { column: col, visible: true });
+                config.entries.push(XlsxColumnEntry {
+                    column: col,
+                    visible: true,
+                });
             }
         }
 
@@ -76,13 +82,16 @@ impl XlsxColumnsConfig {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let text =
-            serde_json::to_string_pretty(self).expect("XlsxColumnsConfig always serializes");
+        let text = serde_json::to_string_pretty(self).expect("XlsxColumnsConfig always serializes");
         fs::write(path, text)
     }
 
     /// The columns that should actually appear in an export, in entry order.
     pub fn visible_columns(&self) -> Vec<XlsxColumn> {
-        self.entries.iter().filter(|e| e.visible).map(|e| e.column).collect()
+        self.entries
+            .iter()
+            .filter(|e| e.visible)
+            .map(|e| e.column)
+            .collect()
     }
 }

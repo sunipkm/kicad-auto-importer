@@ -929,8 +929,16 @@ pub fn generate_priced_bom_xlsx(
     let mut grand_total = 0.0f64;
     let mut row_idx: u32 = 1;
     for row in rows {
-        let text_fmt = if priced_row_needs_attention(row) { &flagged_format } else { &normal_format };
-        let money_fmt = if priced_row_needs_attention(row) { &flagged_money_format } else { &money_format };
+        let text_fmt = if priced_row_needs_attention(row) {
+            &flagged_format
+        } else {
+            &normal_format
+        };
+        let money_fmt = if priced_row_needs_attention(row) {
+            &flagged_money_format
+        } else {
+            &money_format
+        };
 
         if let Ok(ch) = &row.outcome {
             grand_total += ch.total_price;
