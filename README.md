@@ -14,7 +14,7 @@ with full details:
   and imports the symbol / footprint / 3-D model files straight into a
   KiCad project's libraries. This is the original application the
   repository is named after.
-- **[`bom-app`](bom-app/README.md)** — a standalone Tauri app for
+- **[`kicad-bom`](kicad-bom/README.md)** — a standalone Tauri app for
   populating a schematic's bill of materials with manufacturer/
   distributor data and generating a priced, multi-vendor PDF/XLSX BOM
   report.
@@ -40,9 +40,9 @@ handling, project/library-table resolution) from `crates/core` — see
   library paths, options, a start/stop toggle, and an activity log),
   the Import-From-Another-Project sub-window, and system tray
   integration. See [`crates/app/README.md`](crates/app/README.md).
-- `bom-app` — a standalone Tauri (Rust backend + React/TypeScript
+- `kicad-bom` — a standalone Tauri (Rust backend + React/TypeScript
   frontend) app for Populate BOM and Generate BOM — see
-  [`bom-app/README.md`](bom-app/README.md). Split out of `crates/app`
+  [`kicad-bom/README.md`](kicad-bom/README.md). Split out of `crates/app`
   because a richer, multi-vendor result picker needed more UI
   flexibility than egui's table widgets comfortably give; its backend
   owns its own Mouser/DigiKey lookup, BOM grouping/pricing, and

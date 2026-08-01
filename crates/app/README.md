@@ -22,12 +22,6 @@ its own GUI, meant to run alongside KiCad or remain running in the
 background to import new parts as they arrive in the configured watch
 folder.
 
-Populating a schematic's bill of materials with manufacturer/distributor
-data and generating a priced BOM report is a separate application —
-see [`bom-app`](../../bom-app/README.md) — sharing this app's
-Mouser/DigiKey API credentials via the same `settings.json` (see
-[Configuration](#configuration)).
-
 This is one of two applications in the `kicad-auto-importer` repository
 — see the [root README](../../README.md) for how the pieces fit
 together.
@@ -50,28 +44,6 @@ together.
   restored from there, or watching can be started/stopped without
   opening it at all. Only one instance ever runs; launching it again
   simply brings the existing window to the front.
-
-## API Settings — Mouser and DigiKey registration
-
-Manufacturer and distributor lookups (used by
-[`bom-app`](../../bom-app/README.md)) are performed through the Mouser
-Search API and the DigiKey Product Information API. Credentials for
-either or both vendors can be entered via the "API Settings" popup in
-this app's main window, or from `bom-app` itself — both read/write the
-same `settings.json` (see [Configuration](#configuration) below), so
-credentials entered in one are immediately visible in the other.
-
-- **Mouser** requires an API key, obtained by registering for API
-  access at [mouser.com/api-search](https://www.mouser.com/api-search/).
-- **DigiKey** requires a Client ID and Client Secret from an OAuth2
-  client-credentials application, obtained at
-  [developer.digikey.com](https://developer.digikey.com/).
-
-Each vendor's fields in this app's "API Settings" popup include a
-"Test" button that verifies the entered credentials against the live
-API and reports whether they were accepted. These credentials are
-account-level, not project-level, and are stored separately from any
-single project's own settings.
 
 ## Installation
 
@@ -134,11 +106,10 @@ Two separate configuration files are used:
   `.kicad-autoimport-cfg.json` inside that project's own directory. A
   project is always scoped to one running instance; there is no global
   fallback location for these settings.
-- **Global settings** — the Mouser/DigiKey API credentials and the
-  path of the last-opened project are account-level rather than
-  project-level, and are stored in a single `settings.json` in the
-  platform's standard configuration directory (`~/.config` on Linux,
-  `~/Library/Application Support` on macOS, `%APPDATA%` on Windows).
+- **Global settings** — the path of the last-opened project is stored
+  in a single `settings.json` in the platform's standard configuration
+  directory (`~/.config` on Linux, `~/Library/Application Support` on
+  macOS, `%APPDATA%` on Windows).
 
 ## License
 

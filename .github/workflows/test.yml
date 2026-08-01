@@ -44,7 +44,7 @@ jobs:
       # Linux-only build dependencies: GTK3 + libayatana-appindicator for
       # the `tray-icon` crate (system tray icon + menu, see
       # crates/app/src/tray.rs), plus everything Tauri needs to compile
-      # `bom-app` (see bom-app/README.md's own "Prerequisites" — this
+      # `bom-app` (see bom-app/BUILD.md's own "Prerequisites" — this
       # list must stay in sync with that one). macOS/Windows use their
       # native tray/webview APIs instead and need nothing extra here.
       - name: Install Linux build dependencies (tray icon + bom-app/Tauri)

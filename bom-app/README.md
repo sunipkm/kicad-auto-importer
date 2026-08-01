@@ -1,4 +1,4 @@
-# KiCad BOM Tool (`bom-app`)
+# KiCad BOM Tool (`kicad-bom`)
 
 A standalone companion to
 [`kicad-auto-importer`](https://github.com/sunipkm/kicad-auto-importer) for
@@ -9,6 +9,9 @@ identical parts, price them out for a given board quantity against the
 cheapest available Mouser/DigiKey quantity break, and export a priced
 PDF/XLSX report).
 
+For build/install instructions, see [BUILD.md](BUILD.md). This document
+covers how the tool itself works.
+
 It is a [Tauri](https://tauri.app/) app: a Rust backend
 (`src-tauri/`) plus a React/TypeScript frontend (`src/`). Schematic
 parsing and symbol-library patching reuse the sibling
@@ -17,14 +20,128 @@ parsing and symbol-library patching reuse the sibling
 while the Mouser/DigiKey API clients, grouping/pricing math, and
 PDF/XLSX generation are this app's own exclusive logic. See the root
 [`README.md`](../README.md#workspace-layout) for how the three pieces
-(`crates/core`, `crates/app`, `bom-app`) fit together.
+(`crates/core`, `crates/app`, `kicad-bom`) fit together.
 
-`bom-app` shares its Mouser/DigiKey API credentials with `crates/app`:
+## Opening a project
+
+Point the tool at a KiCad project directory (Browse… or paste a path).
+It locates the root `.kicad_sch` matching the project's `.kicad_pro`
+stem and walks it — including every hierarchical sub-sheet it
+references, transitively, following each `(sheet (Sheetfile ...))` — to
+build the full list of placed symbols. Two kinds of symbols are always
+excluded from that list, the same way KiCad's own BOM export excludes
+them:
+
+- Symbols with `(in_bom no)` set.
+- Symbols marked **DNP** ("Do Not Populate") in KiCad — `(dnp yes)`.
+- KiCad's own auto-generated non-BOM references (`#PWR...`, `#FLG...`).
+
+A multi-unit symbol (e.g. a quad op-amp) places one `(symbol ...)`
+block per unit sharing the same reference; only the first unit is kept,
+so it appears once, not once per unit.
+
+Each tab has its own **Reload** button that re-walks the schematic from
+disk — useful after editing the schematic in KiCad itself, since the
+tool never watches the file for changes automatically.
+
+## Populate BOM
+
+Lists every placed symbol (reference, value, description) with a
+checkbox per row. Selecting rows and clicking **Populate BOM**:
+
+1. Looks up each part's manufacturer part number against Mouser and/or
+   DigiKey (whichever vendor(s) have credentials configured), scores
+   the candidates by cheapest offer that can actually cover the needed
+   quantity, and writes the winning vendor's SKU/price/stock/lifecycle
+   data back onto that symbol instance as KiCad properties (`Mfr #`,
+   `<Vendor> #`, stock/lifecycle notes, plus a `Last Checked`
+   timestamp).
+2. Skips any part whose `Last Checked` is under 24h old, unless
+   **Force re-check** is ticked — this is what makes re-running
+   Populate BOM on a large project cheap: only parts that have gone
+   stale (or were never checked) actually hit the network.
+3. Saves a PDF stock/lifecycle report for whichever parts were actually
+   (re-)checked this run.
+
+Each row's automatic pick can be overridden: the vendor dropdown next
+to a row shows every scored candidate from every configured vendor,
+ranked best-first, and picking one there pins that exact choice onto
+the schematic immediately (`apply_vendor_choice`), independent of a
+full batch run.
+
+### Lookup field selection
+
+For each symbol instance, the vendor search uses the first non-empty
+property it finds whose name matches one of the following
+case-insensitively: `MPN`, `Manufacturer Part Number`, `Mfr#`, `Mfr #`,
+or `Part Number`. If none is present, it falls back to the bare library
+symbol name (the part after `:` in the library ID); for example,
+`Amplifier_Operational:LM358` is searched as `LM358`.
+
+`Reference`, `Value`, `Footprint`, `Description`, and `Datasheet` are
+not used to form the vendor search. This matters for generic KiCad
+symbols: a `Device:R` resistor with value `10k`, or a `Device:C`
+capacitor with value `100nF`, falls back to the broad search term `R`
+or `C`, not `10k` or `100nF`. Set one of the MPN properties above on
+the symbol instance for a reliable lookup (for example,
+`MPN = RC0603FR-0710KL`). Generate BOM still keeps generic parts with
+different values or footprints in separate groups, but that grouping
+does not make their vendor search term more specific.
+
+## Generate BOM
+
+Groups every placed symbol into unique purchasable parts (same MPN, or
+same value+footprint for generic passives with no MPN set), prices each
+group for a given **board quantity**, and produces a priced PDF and/or
+XLSX report. A **passive extra margin** percentage pads the needed
+quantity of resistors/capacitors/inductors only (minimum +5 pieces) to
+account for the usual assembly/rework loss on cheap passives.
+
+Like Populate BOM, a group whose cached lookup is still fresh (within
+24h — the two features share the same cache) is reused instead of
+re-queried, unless **Force re-check** is set.
+
+Once a run completes, if the project has a PCB, an **Interactive BOM**
+becomes available — a self-contained HTML board viewer (adapted from
+[InteractiveHtmlBom](https://github.com/openscopeproject/InteractiveHtmlBom))
+highlighting each part's footprint on the board, annotated with this
+run's pricing. It opens in its own window, or can be exported to a
+standalone HTML file or XLSX.
+
+## KiCad-open awareness
+
+This tool reads and writes the same `.kicad_sch` files KiCad itself
+has open, so every actual write is guarded against clobbering KiCad's
+own in-memory copy:
+
+- Right before writing to a specific `.kicad_sch`, the tool checks for
+  the sibling lock file KiCad itself creates while that exact file is
+  open in an editor (`~<name>.kicad_sch.lck`, next to the file) — the
+  same mechanism KiCad uses to warn about a file already being open
+  elsewhere. If present, that file's write is skipped (lookups, in-
+  memory updates, and the report are unaffected) and logged as a
+  warning; nothing about the skip is persisted, so the next run
+  retries cleanly.
+- This check happens per file, at the moment of the actual write — not
+  once for a whole batch — so closing a sheet in KiCad partway through
+  a run doesn't block writes to sheets it's no longer holding.
+- Before starting a batch, the frontend also shows an advisory heads-up
+  if any KiCad process appears to have the project open at all (a
+  coarser, best-effort process-level check) — purely informational; it
+  never blocks the run, since the precise per-file check above is what
+  actually decides whether each write proceeds.
+
+## Credentials and local caches
+
+`kicad-bom` shares its Mouser/DigiKey API credentials with `crates/app`:
 both read/write the same `settings.json` in the platform's standard
 config directory (`~/.config/kicad-auto-importer` on Linux,
 `~/Library/Application Support/kicad-auto-importer` on macOS,
 `%APPDATA%\kicad-auto-importer` on Windows) — credentials entered in
 one show up in the other immediately, no import/export step needed.
+Each vendor's field in the "API Settings" popover (the gear icon, top
+right) has its own "Test" button that verifies the entered key/
+credentials against the live API without saving anything.
 
 The same directory also holds `parts_cache.json` — a local, global
 cache of every raw Mouser/DigiKey search result Populate/Generate BOM
@@ -34,116 +151,6 @@ cover the needed quantity — see `parts_lookup::score_candidates`) and
 to skip a live API call entirely when a cached entry is still fresh
 (24h). It's plain JSON and safe to delete any time — everything in it
 gets refetched on demand.
-
-Each vendor's field in the "API Settings" popover (the gear icon, top
-right) has its own "Test" button that verifies the entered key/
-credentials against the live API without saving anything — the same
-check `crates/app`'s own "API Settings" popup offers.
-
-## Installation
-
-Prebuilt binaries are published alongside `crates/app`'s own on the
-[Releases page](https://github.com/sunipkm/kicad-auto-importer/releases/latest):
-a bare binary in a `.tar.gz` on Linux, a `.dmg` on macOS, and — combined
-with `kicad-auto-importer.exe` into a single installer — an NSIS `.exe`
-on Windows. See [How CI packages it](#how-ci-packages-it) below for the
-exact shape of each. Building from source needs the
-[Prerequisites](#prerequisites) below plus a Rust toolchain (see the
-root [`README.md`](../README.md)).
-
-## Prerequisites
-
-Building or running `bom-app` needs, in addition to the Rust toolchain
-`crates/core`/`crates/app` already require:
-
-- **Node.js** (18+) and **npm** — install dependencies once with
-  `npm install` from this directory before the first `dev`/`build`.
-- The same platform system libraries Tauri's own docs list for its
-  [prerequisites](https://v2.tauri.app/start/prerequisites/). On
-  Linux (Debian/Ubuntu):
-  ```sh
-  sudo apt install libwebkit2gtk-4.1-dev build-essential curl wget file \
-    libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
-  ```
-
-## Development
-
-```sh
-cd bom-app
-npm install
-npm run tauri dev
-```
-
-This starts the Vite dev server and opens the app in a native webview
-with hot reload. Rust changes under `src-tauri/` trigger a rebuild;
-frontend changes under `src/` hot-reload without one.
-
-## Building an installer
-
-```sh
-cd bom-app
-npm install
-npm run tauri build
-```
-
-Produces a platform-native installer/bundle under
-`src-tauri/target/release/bundle/` — an NSIS `.exe` on Windows, a
-`.dmg`/`.app` on macOS, and a `.deb`/AppImage on Linux — per
-`src-tauri/tauri.conf.json`'s `bundle` config. Handy for a local build,
-but **not** what CI's release packaging actually runs — see below.
-
-### How CI packages it
-
-`.github/workflows/test.yml` builds `bom-app` as a bare `cargo build
---release -p bom-app` binary (after `npm run build` produces
-`dist/`, which `tauri::generate_context!()` embeds at compile time) and
-packages it by hand, the same way it packages `crates/app`'s own
-`kicad-auto-importer` binary, rather than invoking `tauri build`'s own
-bundler:
-
-- **Linux** — a bare binary in a `.tar.gz`, not a `.deb`/AppImage.
-  `bom-app` self-registers its own `.desktop` launcher entry and hicolor
-  icons in the user's XDG data directories on first run
-  (`src/linux_desktop_integration.rs`) — the exact same mechanism
-  `crates/app` uses (`crates/app/src/linux_desktop_integration.rs`) and
-  for the same reason: shipping a bare binary means there's no
-  packaging step to install a desktop file for us.
-- **macOS** — a hand-built `KiCad BOM Tool.app` (ad-hoc signed, same as
-  `crates/app`'s own `.app`) wrapped in its own `.dmg` via `create-dmg`.
-- **Windows** — `bom-app.exe` and `kicad-auto-importer.exe` are
-  installed together by **one** NSIS installer
-  ([`packaging/windows/installer.nsi`](../packaging/windows/installer.nsi)),
-  not two separate ones — see that script's own header comment for why.
-
-The two apps still ship as independent binaries everywhere (this is
-about how they're *packaged/installed*, not a merge of the two apps).
-
-## Layout
-
-- `src-tauri/src/lib.rs` — every `#[tauri::command]` the frontend
-  calls: project/schematic listing, the Populate BOM batch
-  (`populate_bom`), the vendor result picker
-  (`get_scored_candidates`/`apply_vendor_choice`), the Generate BOM
-  batch (`generate_bom`), the credentials bridge
-  (`load_vendor_credentials`/`save_vendor_credentials`), and the credential
-  test buttons (`test_mouser_credentials`/`test_digikey_credentials`).
-  Schematic/symbol-library parsing is backed by `kicad_parse`;
-  vendor/pricing logic is bom-app's own.
-- `src/App.tsx` — project picker + top-level layout.
-- `src/SettingsPanel.tsx` — Mouser/DigiKey credential fields and their
-  "Test" buttons.
-- `src/PopulateBom.tsx` — the placed-symbol table, selection, and
-  batch lookup UI.
-- `src/VendorDropdown.tsx` — the "which of these matches my part"
-  dropdown, anchored under each row's own trigger button in the
-  Populate BOM table, ranking every candidate best-first
-  (`get_scored_candidates`) so the automatic pick is usually obvious at
-  a glance, with a manual override.
-- `src/GenerateBom.tsx` — board quantity/margin inputs, the grouped
-  parts table, and the priced batch run (PDF + XLSX export).
-- `src/XlsxColumnsPanel.tsx` — checkbox + reorder UI for configuring
-  which columns appear in the XLSX export (persisted to
-  `~/.config/bom-app/xlsx_columns.json`).
 
 ## Third-party assets
 
