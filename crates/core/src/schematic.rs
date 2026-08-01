@@ -636,6 +636,119 @@ mod tests {
     }
 
     #[test]
+    fn follows_two_levels_of_nested_sub_sheets() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("top.kicad_pro"), "{}").unwrap();
+        fs::write(
+            dir.path().join("top.kicad_sch"),
+            r#"(kicad_sch (version 20231120)
+	(sheet
+		(at 50 50)
+		(property "Sheetname" "Mid" (at 0 0 0))
+		(property "Sheetfile" "mid.kicad_sch" (at 0 0 0))
+	)
+)"#,
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("mid.kicad_sch"),
+            r#"(kicad_sch (version 20231120)
+	(symbol
+		(lib_id "Device:R")
+		(at 10 10 0)
+		(unit 1)
+		(in_bom yes)
+		(uuid "99999999-9999-9999-9999-999999999999")
+		(property "Reference" "R1" (at 0 0 0))
+	)
+	(sheet
+		(at 100 50)
+		(property "Sheetname" "Leaf" (at 0 0 0))
+		(property "Sheetfile" "leaf.kicad_sch" (at 0 0 0))
+	)
+)"#,
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("leaf.kicad_sch"),
+            r#"(kicad_sch (version 20231120)
+	(symbol
+		(lib_id "Device:C")
+		(at 10 10 0)
+		(unit 1)
+		(in_bom yes)
+		(uuid "55555555-5555-5555-5555-555555555555")
+		(property "Reference" "C1" (at 0 0 0))
+	)
+)"#,
+        )
+        .unwrap();
+
+        let rows = load_schematic_symbols(dir.path(), |_| {});
+        let refs: Vec<&str> = rows.iter().map(|r| r.reference.as_str()).collect();
+        assert_eq!(refs, vec!["C1", "R1"]);
+        assert_eq!(rows[0].sch_path, dir.path().join("leaf.kicad_sch"));
+        assert_eq!(rows[1].sch_path, dir.path().join("mid.kicad_sch"));
+    }
+
+    #[test]
+    fn collects_symbols_from_multiple_sibling_sub_sheets() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("top.kicad_pro"), "{}").unwrap();
+        fs::write(
+            dir.path().join("top.kicad_sch"),
+            r#"(kicad_sch (version 20231120)
+	(sheet
+		(at 50 50)
+		(property "Sheetname" "A"
+			(at 0 0 0))
+		(property "Sheetfile" "a.kicad_sch" (at 0 0 0))
+	)
+	(sheet
+		(at 150 50)
+		(property "Sheetname" "B" (at 0 0 0))
+		(property "Sheetfile" "b.kicad_sch" (at 0 0 0))
+	)
+)"#,
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("a.kicad_sch"),
+            r#"(kicad_sch (version 20231120)
+	(symbol
+		(lib_id "Device:R")
+		(at 10 10 0)
+		(unit 1)
+		(in_bom yes)
+		(uuid "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+		(property "Reference" "R1" (at 0 0 0))
+	)
+)"#,
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("b.kicad_sch"),
+            r#"(kicad_sch (version 20231120)
+	(symbol
+		(lib_id "Device:C")
+		(at 10 10 0)
+		(unit 1)
+		(in_bom yes)
+		(uuid "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+		(property "Reference" "C1" (at 0 0 0))
+	)
+)"#,
+        )
+        .unwrap();
+
+        let rows = load_schematic_symbols(dir.path(), |_| {});
+        let refs: Vec<&str> = rows.iter().map(|r| r.reference.as_str()).collect();
+        assert_eq!(refs, vec!["C1", "R1"]);
+        assert_eq!(rows[0].sch_path, dir.path().join("b.kicad_sch"));
+        assert_eq!(rows[1].sch_path, dir.path().join("a.kicad_sch"));
+    }
+
+    #[test]
     fn references_sort_naturally() {
         let dir = tempdir().unwrap();
         fs::write(dir.path().join("demo.kicad_pro"), "{}").unwrap();

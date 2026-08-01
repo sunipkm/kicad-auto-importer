@@ -314,6 +314,47 @@ mod tests {
         );
     }
 
+    /// The same identical-value/footprint resistor placed on two
+    /// different hierarchical sub-sheets (different `.kicad_sch` files)
+    /// must still merge into one group — `run_bom_batch` opens every
+    /// distinct `sch_path` across a group's instances, so grouping must
+    /// not implicitly assume every instance lives in the same file.
+    #[test]
+    fn groups_the_same_part_placed_across_different_sheet_files() {
+        let mut r1 = placed(
+            "R1",
+            "Device:R",
+            "10k",
+            "Resistor_SMD:R_0603_1608Metric",
+            "R",
+        );
+        r1.sch_path = std::path::PathBuf::from("/project/sheet_a.kicad_sch");
+        let mut r2 = placed(
+            "R2",
+            "Device:R",
+            "10k",
+            "Resistor_SMD:R_0603_1608Metric",
+            "R",
+        );
+        r2.sch_path = std::path::PathBuf::from("/project/sheet_b.kicad_sch");
+
+        let groups = group_placed_symbols(&[r1, r2]);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(
+            groups[0].instances,
+            vec![
+                (
+                    std::path::PathBuf::from("/project/sheet_a.kicad_sch"),
+                    "R1".to_string()
+                ),
+                (
+                    std::path::PathBuf::from("/project/sheet_b.kicad_sch"),
+                    "R2".to_string()
+                ),
+            ]
+        );
+    }
+
     #[test]
     fn groups_by_explicit_mpn_regardless_of_value() {
         let symbols = vec![
