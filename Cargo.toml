@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/core", "crates/app", "bom-app/src-tauri"]
 
 [workspace.package]
-version = "0.0.1"
+version = "0.0.2"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/sunipkm/kicad-auto-importer"
@@ -16,4 +16,4 @@ authors = ["Sunip K. Mukherjee <sunipkmukherjee@gmail.com>"]
 # with the crate's own `version.workspace = true` instead of duplicating
 # the literal "0.0.1" by hand in `crates/app/Cargo.toml`.
 [workspace.dependencies]
-kicad-parse = { path = "crates/core", version = "0.0.1" }
+kicad-parse = { path = "crates/core", version = "0.0.2" }
