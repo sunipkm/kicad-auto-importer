@@ -101,7 +101,7 @@ jobs:
           set -euo pipefail
           for target in ${{ join(matrix.targets, ' ') }}; do
             cargo build --release --target "$target" -p kicad-auto-importer
-            cargo build --release --target "$target" -p bom-app
+            cargo build --release --target "$target" -p kicad-bom
           done
 
       - name: Package release archives (linux)
@@ -110,16 +110,13 @@ jobs:
         run: |
           set -euo pipefail
           for target in ${{ join(matrix.targets, ' ') }}; do
-            tar czf "kicad-auto-importer-$target.tar.gz" \
-              -C "target/$target/release" kicad-auto-importer
-            # A bare binary, same as kicad-auto-importer above rather
-            # than a `.deb`/AppImage — bom-app self-registers its own
-            # `.desktop` entry and icons on first run instead
-            # (`bom-app/src-tauri/src/linux_desktop_integration.rs`),
-            # the same mechanism `crates/app` uses for exactly the same
-            # reason (see that module's own docs).
-            tar czf "bom-app-$target.tar.gz" \
-              -C "target/$target/release" bom-app
+            # Both kicad-auto-importer and kicad-bom-app ship as bare
+            # binaries rather than .deb/.AppImage — both self-register
+            # their own `.desktop` entries and icons on first run
+            # (see linux_desktop_integration.rs), so they're packaged
+            # together into a single archive.
+            tar czf "kicad-autotools-$target.tar.gz" \
+              -C "target/$target/release" kicad-auto-importer kicad-bom-app
           done
 
       # macOS ships as a proper double-clickable `.app`, not a bare
@@ -175,14 +172,14 @@ jobs:
             codesign --force --deep --sign - "$app_dir"
           done
 
-      # bom-app's own `.app`, built by hand the same way as
+      # kicad-bom-app's own `.app`, built by hand the same way as
       # kicad-auto-importer's above (not via `tauri build`'s own macOS
       # bundler) so both go through one well-understood, already-proven
       # pipeline rather than two different ones — the only real
-      # difference is the icon: bom-app already ships a ready-made
+      # difference is the icon: kicad-bom-app already ships a ready-made
       # `icon.icns` (`bom-app/src-tauri/icons/`), so there's no
       # `--emit-iconset` step to run first.
-      - name: Build bom-app .app bundle(s)
+      - name: Build kicad-bom-app .app bundle(s)
         if: inputs.build_release && matrix.os == 'macos-latest'
         shell: bash
         run: |
@@ -192,7 +189,7 @@ jobs:
             release_dir="target/$target/release"
             app_dir="$release_dir/KiCad BOM Tool.app"
             mkdir -p "$app_dir/Contents/MacOS" "$app_dir/Contents/Resources"
-            cp "$release_dir/bom-app" "$app_dir/Contents/MacOS/bom-app"
+            cp "$release_dir/kicad-bom-app" "$app_dir/Contents/MacOS/kicad-bom-app"
             cp "bom-app/src-tauri/icons/icon.icns" "$app_dir/Contents/Resources/AppIcon.icns"
 
             plist="$app_dir/Contents/Info.plist"
@@ -203,7 +200,7 @@ jobs:
             plutil -insert CFBundleVersion -string "$version" "$plist"
             plutil -insert CFBundleShortVersionString -string "$version" "$plist"
             plutil -insert CFBundlePackageType -string "APPL" "$plist"
-            plutil -insert CFBundleExecutable -string "bom-app" "$plist"
+            plutil -insert CFBundleExecutable -string "kicad-bom-app" "$plist"
             plutil -insert CFBundleIconFile -string "AppIcon" "$plist"
             plutil -insert CFBundleInfoDictionaryVersion -string "6.0" "$plist"
             plutil -insert LSMinimumSystemVersion -string "11.0" "$plist"
@@ -219,6 +216,7 @@ jobs:
       # macOS users expect, built with `create-dmg` (not preinstalled,
       # hence the `brew install` below) rather than hand-rolling
       # `hdiutil`/AppleScript window-layout automation ourselves.
+      # Both apps are packaged into a single DMG per target.
       - name: Package macOS installer DMG(s)
         if: inputs.build_release && matrix.os == 'macos-latest'
         shell: bash
@@ -236,46 +234,26 @@ jobs:
             release_dir="target/$target/release"
 
             # create-dmg copies *everything* in its source folder into
-            # the disk image, so the `.app` needs to be alone in a clean
+            # the disk image, so both .apps need to be alone in a clean
             # staging directory first — `release_dir` itself is full of
-            # unrelated build artifacts (the raw binary, AppIcon.iconset,
-            # Info.plist, ...) that would otherwise end up in the DMG too.
+            # unrelated build artifacts that would otherwise end up in the DMG too.
             staging_dir="target/$target/dmg-staging"
             rm -rf "$staging_dir"
             mkdir -p "$staging_dir"
             cp -R "$release_dir/KiCad Auto Importer.app" "$staging_dir/"
+            cp -R "$release_dir/KiCad BOM Tool.app" "$staging_dir/"
 
             create-dmg \
-              --volname "KiCad Auto Importer" \
+              --volname "KiCad Autotools" \
               --background dmg-background.png \
               --window-size 660 400 \
               --icon-size 128 \
-              --icon "KiCad Auto Importer.app" 180 170 \
-              --app-drop-link 480 170 \
+              --icon "KiCad Auto Importer.app" 90 170 \
+              --icon "KiCad BOM Tool.app" 270 170 \
+              --app-drop-link 450 170 \
               --no-internet-enable \
-              "kicad-auto-importer-$target.dmg" \
+              "kicad-autotools-$target.dmg" \
               "$staging_dir"
-
-            # bom-app gets its own DMG, in its own clean staging
-            # directory — same reasoning as above, and kept as a
-            # separate installer from kicad-auto-importer's rather than
-            # one DMG with two apps, matching how these two ship
-            # everywhere else (independent binaries/installers, see the
-            # root README's "Workspace layout").
-            bom_staging_dir="target/$target/bom-dmg-staging"
-            rm -rf "$bom_staging_dir"
-            mkdir -p "$bom_staging_dir"
-            cp -R "$release_dir/KiCad BOM Tool.app" "$bom_staging_dir/"
-
-            create-dmg \
-              --volname "KiCad BOM Tool" \
-              --window-size 660 400 \
-              --icon-size 128 \
-              --icon "KiCad BOM Tool.app" 180 170 \
-              --app-drop-link 480 170 \
-              --no-internet-enable \
-              "bom-app-$target.dmg" \
-              "$bom_staging_dir"
           done
 
       # An NSIS installer rather than a bare `.exe`: Start Menu shortcut,
@@ -344,7 +322,7 @@ jobs:
             Get-ChildItem $releaseDir
             $exePath = "$releaseDir\kicad-auto-importer.exe"
             $icoPath = "$releaseDir\app.ico"
-            $bomExePath = "$releaseDir\bom-app.exe"
+            $bomExePath = "$releaseDir\kicad-bom-app.exe"
             if (-not (Test-Path $exePath)) {
               Write-Output "::error::kicad-auto-importer.exe missing from $releaseDir right before packaging"
               exit 1
@@ -353,22 +331,22 @@ jobs:
               Write-Output "::error::app.ico missing from $releaseDir after --emit-ico"
               exit 1
             }
-            # bom-app.exe needs no separate --emit-ico: `tauri-build`
+            # kicad-bom-app.exe needs no separate --emit-ico: `tauri-build`
             # already embeds `bom-app/src-tauri/icons/icon.ico` as its
             # Windows resource icon at compile time, so its Start Menu
             # shortcut (installer.nsi) uses that instead.
             if (-not (Test-Path $bomExePath)) {
-              Write-Output "::error::bom-app.exe missing from $releaseDir right before packaging"
+              Write-Output "::error::kicad-bom-app.exe missing from $releaseDir right before packaging"
               exit 1
             }
 
-            $outFile = "KiCadAutoImporter-Setup-$target.exe"
+            $outFile = "KiCadAutotools-Setup-$target.exe"
             $outFilePath = "$env:GITHUB_WORKSPACE\$outFile"
 
             makensis `
               "-DEXE_PATH=$exePath" `
               "-DICO_PATH=$icoPath" `
-              "-DBOM_EXE_PATH=$bomExePath" `
+              "-DKICAD_BOM_APP_EXE_PATH=$bomExePath" `
               "-DPRODUCT_VERSION=$version" `
               "-DFILE_VERSION=$versionNumeric" `
               "-DOUT_FILE=$outFilePath" `
@@ -382,7 +360,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: inputs.build_release
         with:
-          name: kicad-auto-importer-${{ matrix.os }}
+          name: kicad-autotools-${{ matrix.os }}
           path: |
-            kicad-auto-importer-*.${{ matrix.archive_ext }}
-            bom-app-*.${{ matrix.archive_ext }}
+            kicad-autotools-*.${{ matrix.archive_ext }}
+            KiCadAutotools-Setup-*.exe

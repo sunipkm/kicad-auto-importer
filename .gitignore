@@ -3,6 +3,9 @@
 *.xlsx
 .*
 !.gitignore
+!.github
+!.github/workflows
+!.github/workflows/*.yml
 !.vscode
 !.vscode/workflows
 !.vscode/workflows/*.yml

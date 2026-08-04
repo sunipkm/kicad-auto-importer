@@ -1,10 +1,9 @@
-; NSIS installer for the KiCad Auto Importer suite: both
-; `kicad-auto-importer.exe` (the folder-watching library importer,
-; `crates/app`) and `bom-app.exe` (the Populate/Generate BOM Tauri app,
-; `bom-app`) ship from this single installer/uninstaller rather than two
-; separate ones — they're a matched pair (same shared `settings.json`,
-; same publisher, same release cadence) and a user setting either up
-; wants both.
+; NSIS installer for KiCad Autotools: both `kicad-auto-importer.exe`
+; (the folder-watching library importer, `crates/app`) and
+; `kicad-bom-app.exe` (the Populate/Generate BOM Tauri app, `bom-app`)
+; ship from this single installer/uninstaller rather than two separate
+; ones — they're a matched pair (same shared `settings.json`, same
+; publisher, same release cadence) and users setting either up want both.
 ;
 ; Built by CI (.github/workflows/test.yml) via `makensis` (installed there
 ; with choco, since windows-latest dropped NSIS from its preinstalled
@@ -21,13 +20,13 @@
 ;   makensis `
 ;     "-DEXE_PATH=<path to the built kicad-auto-importer.exe>" `
 ;     "-DICO_PATH=<path to a standalone .ico, see icon::write_ico>" `
-;     "-DBOM_EXE_PATH=<path to the built bom-app.exe>" `
+;     "-DKICAD_BOM_APP_EXE_PATH=<path to the built kicad-bom-app.exe>" `
 ;     "-DPRODUCT_VERSION=<full version, e.g. 0.0.1-pre0>" `
 ;     "-DFILE_VERSION=<strictly-numeric X.Y.Z, e.g. 0.0.1>" `
 ;     "-DOUT_FILE=<path the built installer .exe should be written to>" `
 ;     packaging/windows/installer.nsi
 ;
-; `BOM_EXE_PATH` needs no matching `BOM_ICO_PATH`: `bom-app.exe` already
+; `KICAD_BOM_APP_EXE_PATH` needs no matching `ICO_PATH`: `kicad-bom-app.exe` already
 ; has its own icon baked in as a Windows resource by `tauri-build`
 ; (`bom-app/src-tauri/build.rs`, from `tauri.conf.json`'s `bundle.icon`),
 ; unlike the bare `kicad-auto-importer.exe`, which needs one supplied
@@ -56,8 +55,8 @@
 !ifndef ICO_PATH
   !error "ICO_PATH must be defined, e.g. /DICO_PATH=app.ico"
 !endif
-!ifndef BOM_EXE_PATH
-  !error "BOM_EXE_PATH must be defined, e.g. /DBOM_EXE_PATH=..\..\target\release\bom-app.exe"
+!ifndef KICAD_BOM_APP_EXE_PATH
+  !error "KICAD_BOM_APP_EXE_PATH must be defined, e.g. /DKICAD_BOM_APP_EXE_PATH=..\..\target\release\kicad-bom-app.exe"
 !endif
 !ifndef PRODUCT_VERSION
   !define PRODUCT_VERSION "0.0.0"
@@ -69,11 +68,11 @@
   !define OUT_FILE "KiCadAutoImporter-Setup.exe"
 !endif
 
-Name "KiCad Auto Importer"
+Name "KiCad Autotools"
 OutFile "${OUT_FILE}"
 Unicode true
-InstallDir "$LOCALAPPDATA\Programs\KiCad Auto Importer"
-InstallDirRegKey HKCU "Software\KiCad Auto Importer" "InstallDir"
+InstallDir "$LOCALAPPDATA\Programs\KiCad Autotools"
+InstallDirRegKey HKCU "Software\KiCad Autotools" "InstallDir"
 RequestExecutionLevel user
 
 !define MUI_ICON "${ICO_PATH}"
@@ -93,31 +92,31 @@ RequestExecutionLevel user
 
 VIProductVersion "${FILE_VERSION}.0"
 VIFileVersion "${FILE_VERSION}.0"
-VIAddVersionKey "ProductName" "KiCad Auto Importer"
+VIAddVersionKey "ProductName" "KiCad Autotools"
 VIAddVersionKey "ProductVersion" "${PRODUCT_VERSION}"
 VIAddVersionKey "FileVersion" "${PRODUCT_VERSION}"
-VIAddVersionKey "FileDescription" "KiCad Auto Importer + BOM Tool installer"
+VIAddVersionKey "FileDescription" "KiCad Autotools installer"
 VIAddVersionKey "LegalCopyright" "Sunip K. Mukherjee"
 
-!define UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\KiCadAutoImporter"
+!define UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\KiCadAutotools"
 
 Section "Install"
   SetOutPath "$INSTDIR"
   File "${EXE_PATH}"
-  File "${BOM_EXE_PATH}"
-  WriteRegStr HKCU "Software\KiCad Auto Importer" "InstallDir" "$INSTDIR"
+  File "${KICAD_BOM_APP_EXE_PATH}"
+  WriteRegStr HKCU "Software\KiCad Autotools" "InstallDir" "$INSTDIR"
   WriteUninstaller "$INSTDIR\Uninstall.exe"
 
-  CreateDirectory "$SMPROGRAMS\KiCad Auto Importer"
-  CreateShortCut "$SMPROGRAMS\KiCad Auto Importer\KiCad Auto Importer.lnk" \
+  CreateDirectory "$SMPROGRAMS\KiCad Autotools"
+  CreateShortCut "$SMPROGRAMS\KiCad Autotools\KiCad Auto Importer.lnk" \
     "$INSTDIR\kicad-auto-importer.exe"
-  CreateShortCut "$SMPROGRAMS\KiCad Auto Importer\KiCad BOM Tool.lnk" \
-    "$INSTDIR\bom-app.exe"
-  CreateShortCut "$SMPROGRAMS\KiCad Auto Importer\Uninstall.lnk" "$INSTDIR\Uninstall.exe"
+  CreateShortCut "$SMPROGRAMS\KiCad Autotools\KiCad BOM Tool.lnk" \
+    "$INSTDIR\kicad-bom-app.exe"
+  CreateShortCut "$SMPROGRAMS\KiCad Autotools\Uninstall.lnk" "$INSTDIR\Uninstall.exe"
 
   ; HKCU (not HKLM): matches the per-user, no-admin install above — a
   ; per-user Add/Remove Programs entry is standard and fully supported.
-  WriteRegStr HKCU "${UNINST_KEY}" "DisplayName" "KiCad Auto Importer"
+  WriteRegStr HKCU "${UNINST_KEY}" "DisplayName" "KiCad Autotools"
   WriteRegStr HKCU "${UNINST_KEY}" "UninstallString" "$INSTDIR\Uninstall.exe"
   WriteRegStr HKCU "${UNINST_KEY}" "DisplayIcon" "$INSTDIR\kicad-auto-importer.exe"
   WriteRegStr HKCU "${UNINST_KEY}" "DisplayVersion" "${PRODUCT_VERSION}"
@@ -128,15 +127,15 @@ SectionEnd
 
 Section "Uninstall"
   Delete "$INSTDIR\kicad-auto-importer.exe"
-  Delete "$INSTDIR\bom-app.exe"
+  Delete "$INSTDIR\kicad-bom-app.exe"
   Delete "$INSTDIR\Uninstall.exe"
   RMDir "$INSTDIR"
 
-  Delete "$SMPROGRAMS\KiCad Auto Importer\KiCad Auto Importer.lnk"
-  Delete "$SMPROGRAMS\KiCad Auto Importer\KiCad BOM Tool.lnk"
-  Delete "$SMPROGRAMS\KiCad Auto Importer\Uninstall.lnk"
-  RMDir "$SMPROGRAMS\KiCad Auto Importer"
+  Delete "$SMPROGRAMS\KiCad Autotools\KiCad Auto Importer.lnk"
+  Delete "$SMPROGRAMS\KiCad Autotools\KiCad BOM Tool.lnk"
+  Delete "$SMPROGRAMS\KiCad Autotools\Uninstall.lnk"
+  RMDir "$SMPROGRAMS\KiCad Autotools"
 
-  DeleteRegKey HKCU "Software\KiCad Auto Importer"
+  DeleteRegKey HKCU "Software\KiCad Autotools"
   DeleteRegKey HKCU "${UNINST_KEY}"
 SectionEnd
