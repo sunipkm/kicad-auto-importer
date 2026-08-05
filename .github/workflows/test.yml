@@ -69,9 +69,6 @@ jobs:
       - name: Install bom-app frontend dependencies
         working-directory: bom-app
         run: npm ci
-      - name: Build bom-app frontend
-        working-directory: bom-app
-        run: npm run build
 
       - name: Format check
         run: cargo fmt --all -- --check
@@ -101,7 +98,16 @@ jobs:
           set -euo pipefail
           for target in ${{ join(matrix.targets, ' ') }}; do
             cargo build --release --target "$target" -p kicad-auto-importer
-            cargo build --release --target "$target" -p kicad-bom
+          done
+
+      - name: Build bom-app with Tauri (embeds frontend into binary)
+        if: inputs.build_release
+        working-directory: bom-app
+        shell: bash
+        run: |
+          set -euo pipefail
+          for target in ${{ join(matrix.targets, ' ') }}; do
+            npm run tauri -- build --target "$target" --runner cargo
           done
 
       - name: Package release archives (linux)
@@ -114,7 +120,9 @@ jobs:
             # binaries rather than .deb/.AppImage — both self-register
             # their own `.desktop` entries and icons on first run
             # (see linux_desktop_integration.rs), so they're packaged
-            # together into a single archive.
+            # together into a single archive. kicad-bom-app's frontend
+            # is embedded in the binary via `tauri build` with no separate
+            # dist/ directory needed.
             tar czf "kicad-autotools-$target.tar.gz" \
               -C "target/$target/release" kicad-auto-importer kicad-bom-app
           done
@@ -172,46 +180,23 @@ jobs:
             codesign --force --deep --sign - "$app_dir"
           done
 
-      # kicad-bom-app's own `.app`, built by hand the same way as
-      # kicad-auto-importer's above (not via `tauri build`'s own macOS
-      # bundler) so both go through one well-understood, already-proven
-      # pipeline rather than two different ones — the only real
-      # difference is the icon: kicad-bom-app already ships a ready-made
-      # `icon.icns` (`bom-app/src-tauri/icons/`), so there's no
-      # `--emit-iconset` step to run first.
-      - name: Build kicad-bom-app .app bundle(s)
+      # kicad-bom-app's `.app` is already built by the `tauri build`
+      # step above with the frontend embedded in the binary. Copy it to
+      # the release directory where the DMG creation step expects both apps.
+      - name: Stage kicad-bom-app .app from Tauri build output
         if: inputs.build_release && matrix.os == 'macos-latest'
         shell: bash
         run: |
           set -euo pipefail
-          version="${GITHUB_REF_NAME#v}"
           for target in ${{ join(matrix.targets, ' ') }}; do
             release_dir="target/$target/release"
-            app_dir="$release_dir/KiCad BOM Tool.app"
-            mkdir -p "$app_dir/Contents/MacOS" "$app_dir/Contents/Resources"
-            cp "$release_dir/kicad-bom-app" "$app_dir/Contents/MacOS/kicad-bom-app"
-            cp "bom-app/src-tauri/icons/icon.icns" "$app_dir/Contents/Resources/AppIcon.icns"
-
-            # Tauri needs the frontend files in Resources at runtime
-            cp -r "bom-app/dist" "$app_dir/Contents/Resources/"
-
-            plist="$app_dir/Contents/Info.plist"
-            plutil -create xml1 "$plist"
-            plutil -insert CFBundleName -string "KiCad BOM Tool" "$plist"
-            plutil -insert CFBundleDisplayName -string "KiCad BOM Tool" "$plist"
-            plutil -insert CFBundleIdentifier -string "com.sunipkm.kicadautoimporter.bomapp" "$plist"
-            plutil -insert CFBundleVersion -string "$version" "$plist"
-            plutil -insert CFBundleShortVersionString -string "$version" "$plist"
-            plutil -insert CFBundlePackageType -string "APPL" "$plist"
-            plutil -insert CFBundleExecutable -string "kicad-bom-app" "$plist"
-            plutil -insert CFBundleIconFile -string "AppIcon" "$plist"
-            plutil -insert CFBundleInfoDictionaryVersion -string "6.0" "$plist"
-            plutil -insert LSMinimumSystemVersion -string "11.0" "$plist"
-            plutil -insert NSHighResolutionCapable -bool true "$plist"
-
-            # Same ad-hoc signing reasoning as kicad-auto-importer's own
-            # .app above — must run last, after every file is in place.
-            codesign --force --deep --sign - "$app_dir"
+            tauri_app="target/$target/release/bundle/macos/KiCad BOM Tool.app"
+            if [ -d "$tauri_app" ]; then
+              cp -R "$tauri_app" "$release_dir/"
+            else
+              echo "Error: Tauri-built app not found at $tauri_app"
+              exit 1
+            fi
           done
 
       # A DMG rather than a bare `.tar.gz` of the `.app`: this is the

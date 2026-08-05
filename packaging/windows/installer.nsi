@@ -33,7 +33,9 @@
 ; externally (`ICO_PATH`) for its Start Menu shortcut/Add-Remove-Programs
 ; icon. `CreateShortCut` below omits an explicit icon file for the BOM
 ; Tool shortcut for exactly this reason — it defaults to the target
-; executable's own embedded icon.
+; executable's own embedded icon. The React frontend is already embedded
+; in `kicad-bom-app.exe` via `tauri build`, so no separate dist/ directory
+; is needed.
 ;
 ; `PRODUCT_VERSION` and `FILE_VERSION` are deliberately separate: this
 ; project tags pre-releases like "v0.0.1-pre0" (see release.yml), but
