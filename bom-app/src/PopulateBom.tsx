@@ -23,6 +23,7 @@ interface PlacedSymbolRow {
   mpn: string;
   sch_path: string;
   uuid: string;
+  dnp: boolean;
   cached: CachedResult;
 }
 
@@ -315,46 +316,59 @@ export function PopulateBom({ projectDir }: { projectDir: string }) {
               <th>Reference</th>
               <th>Value</th>
               <th>Description</th>
-              <th>Result</th>
+              <th>Status</th>
               <th></th>
             </tr>
           </thead>
           <tbody>
             {rows.map((row) => {
               const result = results.get(row.index);
+              const isDnp = row.dnp;
               return (
                 <tr
                   key={row.index}
-                  className={`selectable ${checked.has(row.index) ? "selected" : ""}`}
-                  onClick={(e) => handleRowClick(row.index, e.shiftKey)}
+                  className={`selectable ${checked.has(row.index) ? "selected" : ""} ${isDnp ? "dnp-row" : ""}`}
+                  onClick={(e) => !isDnp && handleRowClick(row.index, e.shiftKey)}
                 >
                   <td>
-                    <input type="checkbox" readOnly checked={checked.has(row.index)} />
+                    <input
+                      type="checkbox"
+                      readOnly
+                      checked={checked.has(row.index)}
+                      disabled={isDnp}
+                    />
                   </td>
-                  <td>{row.reference}</td>
+                  <td>
+                    {row.reference}
+                    {isDnp && <span className="badge-dnp">DNP</span>}
+                  </td>
                   <td>{row.value}</td>
                   <td>{row.description}</td>
-                  <td className={result ? resultClass(result) : undefined}>
-                    {result && (
+                  <td className={isDnp ? "muted" : result ? resultClass(result) : undefined}>
+                    {isDnp ? (
+                      <span className="muted">—</span>
+                    ) : result ? (
                       <span>
                         {resultGlyph(result)} {result.summary}
                       </span>
-                    )}
+                    ) : null}
                   </td>
                   <td onClick={(e) => e.stopPropagation()}>
-                    <VendorDropdown
-                      mpn={row.mpn}
-                      neededQty={1}
-                      schPath={row.sch_path}
-                      uuid={row.uuid}
-                      currentSummary={result && !result.unavailable ? result.summary : null}
-                      currentUnsafe={
-                        !!result &&
-                        !result.unavailable &&
-                        (!result.ok || result.needsAttention || !!result.stale)
-                      }
-                      onApplied={(chosen) => applyVendorResult(row.index, chosen)}
-                    />
+                    {!isDnp && (
+                      <VendorDropdown
+                        mpn={row.mpn}
+                        neededQty={1}
+                        schPath={row.sch_path}
+                        uuid={row.uuid}
+                        currentSummary={result && !result.unavailable ? result.summary : null}
+                        currentUnsafe={
+                          !!result &&
+                          !result.unavailable &&
+                          (!result.ok || result.needsAttention || !!result.stale)
+                        }
+                        onApplied={(chosen) => applyVendorResult(row.index, chosen)}
+                      />
+                    )}
                   </td>
                 </tr>
               );

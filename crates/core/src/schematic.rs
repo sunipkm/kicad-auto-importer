@@ -63,6 +63,8 @@ pub struct PlacedSymbol {
     /// the exact byte span to patch, since schematic symbol instances
     /// (unlike `kicad_sym` symbols) have no unique leading name atom.
     pub uuid: String,
+    /// Whether this symbol is marked as "Do Not Populate" (DNP).
+    pub dnp: bool,
 }
 
 impl PlacedSymbol {
@@ -119,10 +121,9 @@ pub fn find_root_schematic(project_dir: &Path) -> Option<PathBuf> {
 
 /// Walk `project_dir`'s root schematic and every hierarchical sub-sheet
 /// it (transitively) references, collecting every placed symbol
-/// instance that would actually appear in a BOM: symbols with
-/// `(in_bom no)`, symbols marked `(dnp yes)` ("Do Not Populate"), and
-/// KiCad's own auto-generated non-BOM references (`#PWR...`, `#FLG...`,
-/// ...) are skipped, same as KiCad's own BOM export.
+/// instance: symbols with `(in_bom no)` and KiCad's own auto-generated
+/// non-BOM references (`#PWR...`, `#FLG...`, ...) are skipped, but symbols
+/// marked `(dnp yes)` ("Do Not Populate") are included with `dnp=true`.
 pub fn load_schematic_symbols(project_dir: &Path, mut log: impl FnMut(&str)) -> Vec<PlacedSymbol> {
     let Some(root) = find_root_schematic(project_dir) else {
         log("  \u{26a0} No root schematic (.kicad_sch matching the project) found.");
@@ -194,9 +195,6 @@ fn collect_from_file(
             .and_then(|n| n.first_atom())
             .map(|a| a.text() == "yes")
             .unwrap_or(false);
-        if dnp {
-            continue;
-        }
         let reference = property_value(sym, "Reference");
         if reference.is_empty() || reference.starts_with('#') {
             continue;
@@ -225,6 +223,7 @@ fn collect_from_file(
             resolved_mpn,
             sch_path: path.to_path_buf(),
             uuid,
+            dnp,
         });
     }
 
@@ -564,7 +563,7 @@ mod tests {
     }
 
     #[test]
-    fn skips_symbols_marked_do_not_populate() {
+    fn includes_symbols_marked_do_not_populate_with_dnp_flag() {
         let dir = tempdir().unwrap();
         fs::write(dir.path().join("demo.kicad_pro"), "{}").unwrap();
         fs::write(
@@ -595,8 +594,11 @@ mod tests {
         .unwrap();
 
         let rows = load_schematic_symbols(dir.path(), |_| {});
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].reference, "R2");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].reference, "R1");
+        assert!(rows[0].dnp);
+        assert_eq!(rows[1].reference, "R2");
+        assert!(!rows[1].dnp);
     }
 
     #[test]

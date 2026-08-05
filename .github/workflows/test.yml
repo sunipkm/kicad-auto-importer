@@ -199,6 +199,20 @@ jobs:
             fi
           done
 
+      # Ad-hoc sign the BOM Tool.app (Tauri build output) with the same
+      # approach as KiCad Auto Importer above. Must run after copying into
+      # release_dir but before creating the DMG.
+      - name: Ad-hoc sign kicad-bom-app .app
+        if: inputs.build_release && matrix.os == 'macos-latest'
+        shell: bash
+        run: |
+          set -euo pipefail
+          for target in ${{ join(matrix.targets, ' ') }}; do
+            release_dir="target/$target/release"
+            app_dir="$release_dir/KiCad BOM Tool.app"
+            codesign --force --deep --sign - "$app_dir"
+          done
+
       # A DMG rather than a bare `.tar.gz` of the `.app`: this is the
       # familiar "drag the app onto Applications" installer experience
       # macOS users expect, built with `create-dmg` (not preinstalled,

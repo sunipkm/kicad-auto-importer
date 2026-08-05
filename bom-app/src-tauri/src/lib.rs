@@ -22,6 +22,7 @@ pub mod mouser;
 mod parts_cache;
 mod parts_lookup;
 mod populate_bom;
+mod symbol_columns;
 mod vendor_credentials;
 mod xlsx_columns;
 
@@ -196,6 +197,7 @@ struct PlacedSymbolRow {
     mpn: String,
     sch_path: String,
     uuid: String,
+    dnp: bool,
     cached: CachedResult,
 }
 
@@ -229,6 +231,7 @@ fn list_placed_symbols(project_dir: String) -> Vec<PlacedSymbolRow> {
                 mpn: row.resolved_mpn.clone(),
                 sch_path: row.sch_path.display().to_string(),
                 uuid: row.uuid.clone(),
+                dnp: row.dnp,
                 cached,
             }
         })
@@ -415,7 +418,7 @@ fn populate_bom(
         let selected: Vec<SelectedRow> = schematic::load_schematic_symbols(&project_dir, |_| {})
             .into_iter()
             .enumerate()
-            .filter(|(index, _)| indices.contains(index))
+            .filter(|(index, row)| indices.contains(index) && !row.dnp)
             .map(|(index, row)| SelectedRow {
                 index,
                 reference: row.reference,
@@ -460,7 +463,10 @@ struct PartGroupRow {
 #[tauri::command]
 fn list_part_groups(project_dir: String) -> Vec<PartGroupRow> {
     let project_dir = std::path::PathBuf::from(project_dir);
-    let symbols = schematic::load_schematic_symbols(&project_dir, |_| {});
+    let symbols = schematic::load_schematic_symbols(&project_dir, |_| {})
+        .into_iter()
+        .filter(|s| !s.dnp)
+        .collect::<Vec<_>>();
     bom_pricing::group_placed_symbols(&symbols)
         .into_iter()
         .enumerate()
@@ -545,7 +551,10 @@ fn generate_bom(
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| "project".to_string());
 
-        let symbols = schematic::load_schematic_symbols(&project_dir, |_| {});
+        let symbols = schematic::load_schematic_symbols(&project_dir, |_| {})
+            .into_iter()
+            .filter(|s| !s.dnp)
+            .collect::<Vec<_>>();
         let groups = bom_pricing::group_placed_symbols(&symbols);
 
         let request = BomBatchRequest {
@@ -711,6 +720,16 @@ fn save_xlsx_columns_config(config: xlsx_columns::XlsxColumnsConfig) -> Result<(
     config.save().map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+fn load_symbol_columns_config() -> symbol_columns::SymbolColumnsConfig {
+    symbol_columns::SymbolColumnsConfig::load()
+}
+
+#[tauri::command]
+fn save_symbol_columns_config(config: symbol_columns::SymbolColumnsConfig) -> Result<(), String> {
+    config.save().map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     #[cfg(target_os = "linux")]
@@ -738,8 +757,8 @@ pub fn run() {
             export_interactive_bom_xlsx,
             load_xlsx_columns_config,
             save_xlsx_columns_config,
-            load_xlsx_columns_config,
-            save_xlsx_columns_config,
+            load_symbol_columns_config,
+            save_symbol_columns_config,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

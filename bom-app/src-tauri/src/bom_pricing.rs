@@ -234,6 +234,7 @@ mod tests {
         value: &str,
         footprint: &str,
         resolved_mpn: &str,
+        dnp: bool,
     ) -> PlacedSymbol {
         PlacedSymbol {
             reference: reference.to_string(),
@@ -243,6 +244,7 @@ mod tests {
             value: value.to_string(),
             footprint: footprint.to_string(),
             resolved_mpn: resolved_mpn.to_string(),
+            dnp,
             sch_path: std::path::PathBuf::new(),
             uuid: reference.to_string(),
         }
@@ -259,6 +261,7 @@ mod tests {
                 "10k",
                 "Resistor_SMD:R_0603_1608Metric",
                 "R",
+                false,
             ),
             placed(
                 "R2",
@@ -266,6 +269,7 @@ mod tests {
                 "10k",
                 "Resistor_SMD:R_0603_1608Metric",
                 "R",
+                false,
             ),
             placed(
                 "R3",
@@ -273,6 +277,7 @@ mod tests {
                 "100k",
                 "Resistor_SMD:R_0603_1608Metric",
                 "R",
+                false,
             ),
         ];
         let groups = group_placed_symbols(&symbols);
@@ -294,6 +299,7 @@ mod tests {
                 "10k",
                 "Resistor_SMD:R_0603_1608Metric",
                 "R",
+                false,
             ),
             placed(
                 "R2",
@@ -301,6 +307,7 @@ mod tests {
                 "10k",
                 "Resistor_SMD:R_0603_1608Metric",
                 "R",
+                false,
             ),
         ];
         let groups = group_placed_symbols(&symbols);
@@ -327,6 +334,7 @@ mod tests {
             "10k",
             "Resistor_SMD:R_0603_1608Metric",
             "R",
+            false,
         );
         r1.sch_path = std::path::PathBuf::from("/project/sheet_a.kicad_sch");
         let mut r2 = placed(
@@ -335,6 +343,7 @@ mod tests {
             "10k",
             "Resistor_SMD:R_0603_1608Metric",
             "R",
+            false,
         );
         r2.sch_path = std::path::PathBuf::from("/project/sheet_b.kicad_sch");
 
@@ -358,8 +367,8 @@ mod tests {
     #[test]
     fn groups_by_explicit_mpn_regardless_of_value() {
         let symbols = vec![
-            placed("U1", "MCU:STM32", "", "QFP:LQFP-48", "STM32F103C8T6"),
-            placed("U2", "MCU:STM32", "", "QFP:LQFP-48", "STM32F103C8T6"),
+            placed("U1", "MCU:STM32", "", "QFP:LQFP-48", "STM32F103C8T6", false),
+            placed("U2", "MCU:STM32", "", "QFP:LQFP-48", "STM32F103C8T6", false),
         ];
         let groups = group_placed_symbols(&symbols);
         assert_eq!(groups.len(), 1);
@@ -372,9 +381,9 @@ mod tests {
     #[test]
     fn preserves_input_order_across_groups() {
         let symbols = vec![
-            placed("C1", "Device:C", "1uF", "Capacitor_SMD:C_0603", "C"),
-            placed("R1", "Device:R", "10k", "Resistor_SMD:R_0603", "R"),
-            placed("C2", "Device:C", "1uF", "Capacitor_SMD:C_0603", "C"),
+            placed("C1", "Device:C", "1uF", "Capacitor_SMD:C_0603", "C", true),
+            placed("R1", "Device:R", "10k", "Resistor_SMD:R_0603", "R", true),
+            placed("C2", "Device:C", "1uF", "Capacitor_SMD:C_0603", "C", true),
         ];
         let groups = group_placed_symbols(&symbols);
         assert_eq!(groups.len(), 2);

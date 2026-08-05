@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { SymbolColumnsPanel } from "./SymbolColumnsPanel";
 import { XlsxColumnsPanel } from "./XlsxColumnsPanel";
 
 // Mirrors `vendor_credentials::VendorCredentials` — bom-app's own
@@ -190,6 +191,11 @@ export function SettingsPanel() {
                 </button>
               </div>
               {status && <p className="field-hint">{status}</p>}
+
+              <details className="settings-section">
+                <summary className="settings-section-title">Symbol Table Columns…</summary>
+                <SymbolColumnsPanel />
+              </details>
 
               <details className="settings-section">
                 <summary className="settings-section-title">Excel Export Columns…</summary>
