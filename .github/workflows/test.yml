@@ -192,6 +192,9 @@ jobs:
             cp "$release_dir/kicad-bom-app" "$app_dir/Contents/MacOS/kicad-bom-app"
             cp "bom-app/src-tauri/icons/icon.icns" "$app_dir/Contents/Resources/AppIcon.icns"
 
+            # Tauri needs the frontend files in Resources at runtime
+            cp -r "bom-app/dist" "$app_dir/Contents/Resources/"
+
             plist="$app_dir/Contents/Info.plist"
             plutil -create xml1 "$plist"
             plutil -insert CFBundleName -string "KiCad BOM Tool" "$plist"

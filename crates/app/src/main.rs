@@ -81,7 +81,7 @@ fn main() -> eframe::Result<()> {
         ..Default::default()
     };
     eframe::run_native(
-        "kicad-auto-importer",
+        "KiCad Auto Importer",
         options,
         Box::new(|cc| {
             theme::install(&cc.egui_ctx);
