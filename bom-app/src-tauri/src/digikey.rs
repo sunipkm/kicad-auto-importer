@@ -251,6 +251,8 @@ struct RawManufacturer {
 struct RawVariation {
     #[serde(rename = "DigiKeyProductNumber", default)]
     digikey_product_number: String,
+    #[serde(rename = "MinimumOrderQuantity", default)]
+    minimum_order_quantity: u32,
     #[serde(rename = "StandardPricing", default)]
     standard_pricing: Vec<RawPriceBreak>,
 }
@@ -348,10 +350,14 @@ fn parse_search_response_multi(text: &str, mpn: &str) -> Result<Vec<DigikeyPart>
 }
 
 fn raw_product_to_digikey_part(product: RawProduct, mpn: &str) -> DigikeyPart {
+    // Pick the variation with the lowest minimum order quantity.
+    // Multiple variations (e.g., Cut Tape vs Tape & Reel) may be available;
+    // prefer one that can be ordered in small quantities over bulk-only options.
     let variation = product
         .product_variations
         .into_iter()
-        .find(|v| !v.standard_pricing.is_empty());
+        .filter(|v| !v.standard_pricing.is_empty())
+        .min_by_key(|v| v.minimum_order_quantity);
     let (sku, breaks): (String, Vec<(f64, f64)>) = match variation {
         Some(v) => {
             let breaks = v

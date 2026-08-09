@@ -543,6 +543,8 @@ details.log-panel pre {
   top: calc(100% + 8px);
   right: 0;
   width: 320px;
+  max-height: 80vh;
+  overflow-y: auto;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius);

@@ -839,16 +839,31 @@ pub fn score_candidates(candidates: &[VendorCandidate], needed_qty: u32) -> Vec<
         .collect();
 
     priced.sort_by(|(_, a_opt, a_feasible), (_, b_opt, b_feasible)| {
-        // `false` (feasible) sorts before `true` (infeasible) — exactly
-        // the priority order described above.
+        // Ranking priority (in order):
+        // 1. Feasibility: candidates with enough stock rank first
+        // 2. Overbuy ratio: prefer options where quantity ≈ needed qty
+        //    (don't force buying 700 when you need 5)
+        // 3. Total price: among equal overbuy ratios, prefer cheaper
+        let a_overbuy = a_opt.quantity as f64 / needed_qty as f64;
+        let b_overbuy = b_opt.quantity as f64 / needed_qty as f64;
         (!a_feasible)
             .cmp(&!b_feasible)
+            .then_with(|| a_overbuy.partial_cmp(&b_overbuy).unwrap())
             .then_with(|| a_opt.total_price.partial_cmp(&b_opt.total_price).unwrap())
     });
 
-    // Cheapest among the feasible options if any exist, else cheapest
-    // overall — the reference point `score` is normalized against
-    // below, matching whichever candidate `priced[0]` actually is.
+    // Best overbuy ratio and price among feasible options if any exist,
+    // else best overall — reference points for scoring below.
+    let best_overbuy = priced
+        .iter()
+        .find(|(_, _, feasible)| *feasible)
+        .map(|(_, opt, _)| opt.quantity as f64 / needed_qty as f64)
+        .unwrap_or_else(|| {
+            priced
+                .first()
+                .map(|(_, opt, _)| opt.quantity as f64 / needed_qty as f64)
+                .unwrap_or(1.0)
+        });
     let best_price = priced
         .first()
         .map(|(_, opt, _)| opt.total_price)
@@ -857,12 +872,21 @@ pub fn score_candidates(candidates: &[VendorCandidate], needed_qty: u32) -> Vec<
     priced
         .into_iter()
         .map(|(candidate, option, feasible)| {
+            let overbuy_ratio = option.quantity as f64 / needed_qty as f64;
+            // Overbuy penalty: buying 2x what's needed costs slightly more
+            // (storage, waste), buying 140x is catastrophic. Use (ratio^0.5)
+            // as a soft penalty curve: overbuy_ratio=1→1.0, 4→2.0, 100→10.0.
+            let overbuy_penalty = overbuy_ratio.sqrt() / best_overbuy.sqrt();
+
+            // Price score: ratio of best to this candidate's total price.
             let price_ratio = if option.total_price > 0.0 {
                 (best_price / option.total_price).min(1.0)
             } else {
                 1.0
             };
-            let mut score = price_ratio * 100.0;
+
+            // Combined score: overbuy penalty and price both matter equally.
+            let mut score = (price_ratio / overbuy_penalty) * 100.0;
             if !feasible {
                 score *= 0.5;
             }
@@ -1594,5 +1618,32 @@ mod tests {
     #[test]
     fn summarize_offers_of_an_empty_list_is_none() {
         assert!(summarize_offers(&[], 1).is_none());
+    }
+
+    #[test]
+    fn prefers_reasonable_moq_over_high_moq_even_if_cheaper() {
+        // The bug from the BOM: D12/D13 choosing 7500 units @ $0.14
+        // when 10 units @ $0.15 were available. We need 10 units.
+        let mut high_moq_cheaper = digikey_part_to_candidate(digikey_part());
+        high_moq_cheaper.mpn = "D12_DIGIKEY_SKU_A".to_string();
+        high_moq_cheaper.offer.sku = "SKU-700-qty".to_string();
+        high_moq_cheaper.offer.price_breaks = vec![(700.0, 0.14)];
+        high_moq_cheaper.offer.stock_quantity = 10_000;
+
+        let mut reasonable_moq_slighter_pricier = mouser_part_to_candidate(mouser_part("a"));
+        reasonable_moq_slighter_pricier.mpn = "D12_MOUSER_SKU_B".to_string();
+        reasonable_moq_slighter_pricier.offer.sku = "SKU-10-qty".to_string();
+        reasonable_moq_slighter_pricier.offer.price_breaks = vec![(10.0, 0.15)];
+        reasonable_moq_slighter_pricier.offer.stock_quantity = 100_000;
+
+        let ranked = score_candidates(&[high_moq_cheaper.clone(), reasonable_moq_slighter_pricier.clone()], 10);
+
+        // Reasonable MOQ (buy 10 when you need 10) should rank first,
+        // despite slightly higher unit price, because overbuy_ratio=1.0
+        // beats overbuy_ratio=70.0.
+        assert_eq!(ranked[0].candidate.offer.sku, "SKU-10-qty");
+        assert!(ranked[0].score > ranked[1].score);
+        assert_eq!(ranked[0].purchase_qty, 10);
+        assert_eq!(ranked[1].purchase_qty, 700);
     }
 }

@@ -216,7 +216,12 @@ export function PopulateBom({ projectDir }: { projectDir: string }) {
         filters: [{ name: "PDF", extensions: ["pdf"] }],
       })) ?? `${projectDir}/${defaultReportName}`;
 
-    setProgressTotal(checked.size);
+    // Count only non-DNP items in the progress total, since the backend
+    // filters out DNP items before processing (even if frontend sends them).
+    const nonDnpChecked = Array.from(checked).filter(
+      (index) => !rows.find((r) => r.index === index)?.dnp
+    ).length;
+    setProgressTotal(nonDnpChecked);
     setInProgress(true);
 
     const unlisten: UnlistenFn = await listen<PopulateBomEvent>(
@@ -280,7 +285,7 @@ export function PopulateBom({ projectDir }: { projectDir: string }) {
         <button
           type="button"
           className="btn btn-sm"
-          onClick={() => setChecked(new Set(rows.map((r) => r.index)))}
+          onClick={() => setChecked(new Set(rows.filter((r) => !r.dnp).map((r) => r.index)))}
           disabled={inProgress}
         >
           Select All

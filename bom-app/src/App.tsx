@@ -33,13 +33,21 @@ function App() {
     }
   }
 
-  // A single click both picks and opens the project — no separate
-  // "Open Project" button to click afterward.
+  // Pick a .kicad_pro file, extract its parent directory as the project dir.
   async function browseForProject() {
-    const selected = await open({ directory: true, multiple: false });
+    const selected = await open({
+      filters: [{ name: "KiCad Project", extensions: ["kicad_pro"] }],
+      multiple: false,
+    });
     if (typeof selected === "string") {
-      setProjectDir(selected);
-      await openProject(selected);
+      // Extract parent directory, handling both Unix (/) and Windows (\) path separators.
+      const lastSlash = Math.max(
+        selected.lastIndexOf("/"),
+        selected.lastIndexOf("\\")
+      );
+      const projectDir = selected.substring(0, lastSlash);
+      setProjectDir(projectDir);
+      await openProject(projectDir);
     }
   }
 
@@ -74,7 +82,7 @@ function App() {
             <div className="card welcome-card">
               <h2>Open a KiCad project</h2>
               <p>
-                Choose a project directory to populate its bill of materials
+                Select a <code>.kicad_pro</code> file to populate its bill of materials
                 with manufacturer/distributor data, or generate a priced BOM
                 report.
               </p>
@@ -89,7 +97,7 @@ function App() {
                   type="text"
                   value={projectDir}
                   onChange={(e) => setProjectDir(e.currentTarget.value)}
-                  placeholder="Path to a KiCad project directory…"
+                  placeholder="Path to project directory (or browse for .kicad_pro)…"
                 />
                 <button type="button" className="btn btn-primary" onClick={browseForProject}>
                   Browse…
