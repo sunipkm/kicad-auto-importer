@@ -17,7 +17,11 @@ set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
 
-mapfile -t FILES < <(git ls-files -- test-project/)
+FILES=()
+while IFS= read -r file; do
+  FILES+=("$file")
+done < <(git ls-files -- test-project/)
+
 if [[ ${#FILES[@]} -eq 0 ]]; then
   echo "No tracked files under test-project/" >&2
   exit 1
