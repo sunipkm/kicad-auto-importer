@@ -73,8 +73,7 @@ pub fn read_custom_fields(
 
     let mut values = CustomFieldValues::new();
     for field_name in field_names {
-        if let Some(value) = kicad_parse::symbol_importer::get_symbol_property(&node, field_name)
-        {
+        if let Some(value) = kicad_parse::symbol_importer::get_symbol_property(&node, field_name) {
             values.insert(field_name.clone(), value);
         }
     }
@@ -91,9 +90,13 @@ pub fn write_custom_fields(
     use kicad_parse::symbol_importer::set_symbol_property;
 
     let mut sch = SchematicFile::open(sch_path)?;
-    let mut node = sch
-        .get_symbol_node(uuid)
-        .ok_or_else(|| format!("Symbol with UUID {} not found in {}", uuid, sch_path.display()))?;
+    let mut node = sch.get_symbol_node(uuid).ok_or_else(|| {
+        format!(
+            "Symbol with UUID {} not found in {}",
+            uuid,
+            sch_path.display()
+        )
+    })?;
 
     for (field_name, value) in values {
         set_symbol_property(&mut node, field_name, value);
@@ -109,13 +112,9 @@ fn config_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
             std::env::var("HOME")? + "/.Library/Application Support/kicad-auto-importer",
         )
     } else if cfg!(target_os = "windows") {
-        std::path::PathBuf::from(
-            std::env::var("APPDATA")? + "\\kicad-auto-importer",
-        )
+        std::path::PathBuf::from(std::env::var("APPDATA")? + "\\kicad-auto-importer")
     } else {
-        std::path::PathBuf::from(
-            std::env::var("HOME")? + "/.config/kicad-auto-importer",
-        )
+        std::path::PathBuf::from(std::env::var("HOME")? + "/.config/kicad-auto-importer")
     };
     Ok(config_dir.join(CONFIG_FILENAME))
 }

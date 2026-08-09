@@ -193,7 +193,11 @@ pub fn run_bom_batch(
                         group.display_name
                     )));
                 }
-                match bom_pricing::choose_offer_with_preference(&info, needed_qty, preferred_vendor.as_deref()) {
+                match bom_pricing::choose_offer_with_preference(
+                    &info,
+                    needed_qty,
+                    preferred_vendor.as_deref(),
+                ) {
                     Some(chosen) => {
                         grand_total += chosen.total_price;
                         let shortfall = chosen.stock_quantity < u64::from(chosen.purchase_qty);
@@ -288,7 +292,12 @@ pub fn run_bom_batch(
     }
     if let Some(path) = &xlsx_path {
         let xlsx_cols = crate::xlsx_columns::XlsxColumnsConfig::load().visible_columns();
-        match bom_report::generate_priced_bom_xlsx(&priced_rows, board_qty, xlsx_cols.as_slice(), path) {
+        match bom_report::generate_priced_bom_xlsx(
+            &priced_rows,
+            board_qty,
+            xlsx_cols.as_slice(),
+            path,
+        ) {
             Ok(()) => on_event(BomEvent::Log(format!(
                 "Priced BOM spreadsheet saved to '{}'.",
                 path.display()

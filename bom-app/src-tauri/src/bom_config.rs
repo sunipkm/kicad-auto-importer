@@ -49,13 +49,9 @@ fn config_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
             std::env::var("HOME")? + "/.Library/Application Support/kicad-auto-importer",
         )
     } else if cfg!(target_os = "windows") {
-        std::path::PathBuf::from(
-            std::env::var("APPDATA")? + "\\kicad-auto-importer",
-        )
+        std::path::PathBuf::from(std::env::var("APPDATA")? + "\\kicad-auto-importer")
     } else {
-        std::path::PathBuf::from(
-            std::env::var("HOME")? + "/.config/kicad-auto-importer",
-        )
+        std::path::PathBuf::from(std::env::var("HOME")? + "/.config/kicad-auto-importer")
     };
     Ok(config_dir.join(CONFIG_FILENAME))
 }

@@ -1636,7 +1636,13 @@ mod tests {
         reasonable_moq_slighter_pricier.offer.price_breaks = vec![(10.0, 0.15)];
         reasonable_moq_slighter_pricier.offer.stock_quantity = 100_000;
 
-        let ranked = score_candidates(&[high_moq_cheaper.clone(), reasonable_moq_slighter_pricier.clone()], 10);
+        let ranked = score_candidates(
+            &[
+                high_moq_cheaper.clone(),
+                reasonable_moq_slighter_pricier.clone(),
+            ],
+            10,
+        );
 
         // Reasonable MOQ (buy 10 when you need 10) should rank first,
         // despite slightly higher unit price, because overbuy_ratio=1.0

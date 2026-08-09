@@ -119,7 +119,12 @@ pub fn is_passive_footprint(footprint: &str) -> bool {
 /// extra_percent / 100), extra_minimum)`: a percentage bump for larger
 /// quantities, with a flat floor so even a 1-off need still gets spares.
 /// When `extra_percent` is 0, no minimum is applied.
-pub fn margin_adjusted_quantity(needed: u32, is_passive: bool, extra_percent: u32, extra_minimum: u32) -> u32 {
+pub fn margin_adjusted_quantity(
+    needed: u32,
+    is_passive: bool,
+    extra_percent: u32,
+    extra_minimum: u32,
+) -> u32 {
     if !is_passive || needed == 0 {
         return needed;
     }
@@ -231,22 +236,20 @@ pub fn choose_offer_with_preference(
 
         // Preferred vendor is not well-stocked; try other well-stocked vendors
         if !sufficiently_stocked.is_empty() {
-            let (offer, option) = sufficiently_stocked
-                .iter()
-                .copied()
-                .min_by(|(_, a), (_, b)| {
-                    a.total_price
-                        .partial_cmp(&b.total_price)
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                })?;
+            let (offer, option) =
+                sufficiently_stocked
+                    .iter()
+                    .copied()
+                    .min_by(|(_, a), (_, b)| {
+                        a.total_price
+                            .partial_cmp(&b.total_price)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    })?;
             return Some(build_chosen_offer(info, offer, option));
         }
 
         // No well-stocked vendors; try the preferred vendor even if understocked
-        if let Some(&(offer, option)) = candidates
-            .iter()
-            .find(|(o, _)| o.seller == pref_vendor)
-        {
+        if let Some(&(offer, option)) = candidates.iter().find(|(o, _)| o.seller == pref_vendor) {
             return Some(build_chosen_offer(info, offer, option));
         }
     }
@@ -631,9 +634,7 @@ mod tests {
 
     #[test]
     fn ignores_preference_when_vendor_unavailable() {
-        let info = info_with_offers(vec![
-            offer_with_stock("DigiKey", vec![(1.0, 0.15)], 100),
-        ]);
+        let info = info_with_offers(vec![offer_with_stock("DigiKey", vec![(1.0, 0.15)], 100)]);
         let chosen = choose_offer_with_preference(&info, 10, Some("Mouser")).unwrap();
         assert_eq!(chosen.seller, "DigiKey");
     }

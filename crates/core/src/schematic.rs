@@ -136,20 +136,13 @@ pub fn load_schematic_symbols(project_dir: &Path, mut log: impl FnMut(&str)) -> 
     // Phase 1: Collect all file paths (single-threaded to handle hierarchy correctly)
     let mut visited_files = HashSet::new();
     let mut file_paths = Vec::new();
-    collect_file_paths(
-        &root,
-        &mut visited_files,
-        &mut file_paths,
-        &mut log,
-    );
+    collect_file_paths(&root, &mut visited_files, &mut file_paths, &mut log);
 
     // Phase 2: Load and parse all files in parallel
     let log_mutex = Mutex::new(Vec::<String>::new());
     let all_symbols: Vec<PlacedSymbol> = file_paths
         .par_iter()
-        .flat_map(|path| {
-            load_symbols_from_file(path, &log_mutex)
-        })
+        .flat_map(|path| load_symbols_from_file(path, &log_mutex))
         .collect();
 
     // Log any collected messages
@@ -211,10 +204,7 @@ fn collect_file_paths(
     }
 }
 
-fn load_symbols_from_file(
-    path: &Path,
-    log_mutex: &Mutex<Vec<String>>,
-) -> Vec<PlacedSymbol> {
+fn load_symbols_from_file(path: &Path, log_mutex: &Mutex<Vec<String>>) -> Vec<PlacedSymbol> {
     let Ok(text) = fs::read_to_string(path) else {
         if let Ok(mut logs) = log_mutex.lock() {
             logs.push(format!(

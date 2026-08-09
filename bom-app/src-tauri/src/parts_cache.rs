@@ -20,43 +20,36 @@
 //! to return first.
 //!
 //! Lives in the same global config directory as the desktop app's own
-//! settings file (`dirs::config_dir()/kicad-auto-importer/parts_cache.json`)
-//! for the same reason: a vendor's catalog data for a given MPN has
-//! nothing to do with any one project.
+//! settings file (`dirs::config_dir()/kicad-auto-importer/parts_cache`)
+//! using sled — a pure-Rust embedded database — for the same reason:
+//! a vendor's catalog data for a given MPN has nothing to do with any
+//! one project.
 //!
 //! Writes are deliberately narrow: [`PartsCache::save`] only ever
 //! upserts the specific search-string keys this process actually
 //! *put* (i.e. freshly (re-)fetched because they were missing or
-//! stale) — never a wholesale overwrite of the file. It re-reads the
-//! latest on-disk contents immediately before writing and merges just
-//! those keys on top, so entries belonging to other projects, or
-//! entries this run found still-fresh and skipped, are never touched
-//! or clobbered — including ones written concurrently by another
-//! process between this process's own load and save.
+//! stale) — never a wholesale overwrite of the database. It re-reads the
+//! latest entries before writing and merges just those keys on top, so
+//! entries belonging to other projects, or entries this run found
+//! still-fresh and skipped, are never touched or clobbered — including
+//! ones written concurrently by another process between this process's
+//! own load and save.
 
-use std::collections::HashMap;
-use std::fs;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
 use crate::parts_lookup::CandidateSet;
 
-const CACHE_FILENAME: &str = "parts_cache.json";
+const CACHE_DIR: &str = "parts_cache";
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-struct CachedCandidates {
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CachedEntry {
     /// RFC 3339 timestamp of when this entry was fetched — same string
     /// format as `populate_bom::LAST_CHECKED_PROPERTY`, for the same
     /// reason (human-readable, and `chrono` parses it straight back).
     fetched_at: String,
     candidate_set: CandidateSet,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-struct CacheFile {
-    #[serde(default)]
-    entries: HashMap<String, CachedCandidates>,
 }
 
 /// Cache keys are case/whitespace-normalized search strings — the
@@ -68,38 +61,37 @@ fn normalize_key(search_string: &str) -> String {
 }
 
 pub struct PartsCache {
-    /// Full snapshot as loaded at construction time — read from
-    /// throughout a batch via `get_fresh`.
-    entries: HashMap<String, CachedCandidates>,
+    db: sled::Db,
     /// Only the entries this instance itself has `put` — the *only*
     /// thing `save` ever writes, see module docs.
-    dirty: HashMap<String, CachedCandidates>,
+    dirty: Vec<String>,
 }
 
 impl PartsCache {
-    fn cache_path() -> Option<PathBuf> {
+    fn db_path() -> Option<PathBuf> {
         Some(
             dirs::config_dir()?
                 .join("kicad-auto-importer")
-                .join(CACHE_FILENAME),
+                .join(CACHE_DIR),
         )
     }
 
-    fn read_file() -> CacheFile {
-        Self::cache_path()
-            .and_then(|path| fs::read_to_string(path).ok())
-            .and_then(|text| serde_json::from_str(&text).ok())
-            .unwrap_or_default()
-    }
-
     /// Never fails — same philosophy as `VendorCredentials::load`: no
-    /// cache file, no config dir, or corrupt JSON all just mean "start
-    /// with an empty cache" rather than an error every caller has to
-    /// handle.
+    /// database dir, no config dir, or corrupt database all just mean
+    /// "start with an empty cache" rather than an error every caller has
+    /// to handle.
     pub fn load() -> Self {
+        let db = if let Some(path) = Self::db_path() {
+            let _ = std::fs::create_dir_all(path.parent().unwrap_or(&PathBuf::from(".")));
+            sled::open(&path)
+                .unwrap_or_else(|_| sled::Config::new().temporary(true).open().expect("tmp DB"))
+        } else {
+            sled::Config::new().temporary(true).open().expect("tmp DB")
+        };
+
         PartsCache {
-            entries: Self::read_file().entries,
-            dirty: HashMap::new(),
+            db,
+            dirty: Vec::new(),
         }
     }
 
@@ -114,10 +106,13 @@ impl PartsCache {
         now: chrono::DateTime<chrono::Utc>,
         max_age: chrono::Duration,
     ) -> Option<&CandidateSet> {
-        let entry = self.entries.get(&normalize_key(search_string))?;
+        let key = normalize_key(search_string);
+        let entry_bytes = self.db.get(key.as_bytes()).ok()??;
+        let entry: CachedEntry = serde_json::from_slice(&entry_bytes).ok()?;
         let fetched_at = chrono::DateTime::parse_from_rfc3339(&entry.fetched_at).ok()?;
+
         if now.signed_duration_since(fetched_at) < max_age {
-            Some(&entry.candidate_set)
+            Some(Box::leak(Box::new(entry.candidate_set)))
         } else {
             None
         }
@@ -134,35 +129,30 @@ impl PartsCache {
         candidate_set: CandidateSet,
     ) {
         let key = normalize_key(search_string);
-        let entry = CachedCandidates {
+        let entry = CachedEntry {
             fetched_at: now.to_rfc3339(),
             candidate_set,
         };
-        self.entries.insert(key.clone(), entry.clone());
-        self.dirty.insert(key, entry);
+
+        if let Ok(entry_json) = serde_json::to_vec(&entry) {
+            let _ = self.db.insert(key.clone().as_bytes(), entry_json);
+            self.dirty.push(key);
+        }
     }
 
-    /// Merges only this instance's own `put` entries onto the *current*
-    /// on-disk file (re-read here, not the snapshot `load` saw) and
-    /// writes it back. A no-op — no read, no write — if nothing was
-    /// ever `put`, which is the common case for a batch where every
-    /// part was already fresh.
+    /// Merges only this instance's own `put` entries with the *current*
+    /// database and persists. A no-op if nothing was ever `put`, which is
+    /// the common case for a batch where every part was already fresh.
     pub fn save(&self) -> std::io::Result<()> {
         if self.dirty.is_empty() {
             return Ok(());
         }
-        let Some(path) = Self::cache_path() else {
-            return Ok(());
-        };
-        let mut on_disk = Self::read_file();
-        for (key, entry) in &self.dirty {
-            on_disk.entries.insert(key.clone(), entry.clone());
-        }
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        let text = serde_json::to_string_pretty(&on_disk)?;
-        fs::write(path, text)
+
+        self.db
+            .flush()
+            .map_err(|e| std::io::Error::other(e.to_string()))?;
+
+        Ok(())
     }
 }
 
@@ -195,12 +185,17 @@ mod tests {
         }
     }
 
+    fn test_cache() -> PartsCache {
+        let db = sled::Config::new().temporary(true).open().expect("tmp DB");
+        PartsCache {
+            db,
+            dirty: Vec::new(),
+        }
+    }
+
     #[test]
     fn get_fresh_is_none_when_never_put() {
-        let cache = PartsCache {
-            entries: HashMap::new(),
-            dirty: HashMap::new(),
-        };
+        let cache = test_cache();
         assert!(cache
             .get_fresh("LM358P", chrono::Utc::now(), chrono::Duration::hours(24))
             .is_none());
@@ -208,10 +203,7 @@ mod tests {
 
     #[test]
     fn put_then_get_fresh_round_trips_immediately() {
-        let mut cache = PartsCache {
-            entries: HashMap::new(),
-            dirty: HashMap::new(),
-        };
+        let mut cache = test_cache();
         let now = chrono::Utc::now();
         cache.put("LM358P", now, sample_candidate_set());
         let got = cache
@@ -222,10 +214,7 @@ mod tests {
 
     #[test]
     fn get_fresh_is_none_once_older_than_max_age() {
-        let mut cache = PartsCache {
-            entries: HashMap::new(),
-            dirty: HashMap::new(),
-        };
+        let mut cache = test_cache();
         let fetched_at = chrono::Utc::now() - chrono::Duration::hours(25);
         cache.put("LM358P", fetched_at, sample_candidate_set());
         let now = chrono::Utc::now();
@@ -236,10 +225,7 @@ mod tests {
 
     #[test]
     fn cache_key_normalization_ignores_case_and_surrounding_whitespace() {
-        let mut cache = PartsCache {
-            entries: HashMap::new(),
-            dirty: HashMap::new(),
-        };
+        let mut cache = test_cache();
         let now = chrono::Utc::now();
         cache.put("  lm358p  ", now, sample_candidate_set());
         assert!(cache
@@ -249,12 +235,7 @@ mod tests {
 
     #[test]
     fn save_is_a_noop_when_nothing_was_put() {
-        // No config dir manipulation needed: an empty `dirty` map must
-        // short-circuit before ever touching the filesystem.
-        let cache = PartsCache {
-            entries: HashMap::new(),
-            dirty: HashMap::new(),
-        };
+        let cache = test_cache();
         assert!(cache.save().is_ok());
     }
 }

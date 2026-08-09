@@ -64,7 +64,11 @@ impl XlsxColumnsConfig {
 
         // Add any standard column not yet in the saved config (forward-compatibility).
         for &col in XlsxColumn::ALL {
-            if !config.entries.iter().any(|e| matches!(e.column, XlsxColumnKey::Standard(c) if c == col)) {
+            if !config
+                .entries
+                .iter()
+                .any(|e| matches!(e.column, XlsxColumnKey::Standard(c) if c == col))
+            {
                 config.entries.push(XlsxColumnEntry {
                     column: XlsxColumnKey::Standard(col),
                     visible: true,
@@ -74,8 +78,10 @@ impl XlsxColumnsConfig {
 
         // Sync with custom fields: add new ones, remove deleted ones.
         let custom_fields_config = custom_fields::CustomFieldsConfig::load();
-        let current_custom_fields: std::collections::HashSet<_> = custom_fields_config.fields.iter().cloned().collect();
-        let saved_custom_fields: std::collections::HashSet<_> = config.entries
+        let current_custom_fields: std::collections::HashSet<_> =
+            custom_fields_config.fields.iter().cloned().collect();
+        let saved_custom_fields: std::collections::HashSet<_> = config
+            .entries
             .iter()
             .filter_map(|e| match &e.column {
                 XlsxColumnKey::Custom(name) => Some(name.clone()),
@@ -84,11 +90,9 @@ impl XlsxColumnsConfig {
             .collect();
 
         // Remove custom fields that no longer exist in the config.
-        config.entries.retain(|e| {
-            match &e.column {
-                XlsxColumnKey::Custom(name) => current_custom_fields.contains(name),
-                _ => true,
-            }
+        config.entries.retain(|e| match &e.column {
+            XlsxColumnKey::Custom(name) => current_custom_fields.contains(name),
+            _ => true,
         });
 
         // Add new custom fields that don't exist in the config yet.

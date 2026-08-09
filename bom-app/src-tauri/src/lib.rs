@@ -9,7 +9,7 @@
 //! specific (Mouser/DigiKey clients, grouping/pricing, PDF/XLSX
 //! generation) — logic exclusive to this app, not shared with the egui
 //! `kicad-auto-importer` desktop app.
-
+#![allow(dead_code)]
 mod bom_config;
 mod bom_pricing;
 mod bom_report;
@@ -491,11 +491,15 @@ fn list_part_groups(project_dir: String) -> Vec<PartGroupRow> {
         .into_iter()
         .enumerate()
         .map(|(index, group)| {
-            let (sch_path, uuid) = group.instances.first()
+            let (sch_path, uuid) = group
+                .instances
+                .first()
                 .map(|(p, u)| (p.to_string_lossy().to_string(), u.clone()))
                 .unwrap_or_default();
 
-            let custom_fields = group.instances.first()
+            let custom_fields = group
+                .instances
+                .first()
                 .and_then(|(path, uuid)| {
                     custom_fields::read_custom_fields(path, uuid, &config.fields).ok()
                 })
@@ -597,7 +601,9 @@ fn generate_bom(
         let custom_fields_config = custom_fields::CustomFieldsConfig::load();
         for group in &mut groups {
             if let Some((path, uuid)) = group.instances.first() {
-                if let Ok(fields) = custom_fields::read_custom_fields(path, uuid, &custom_fields_config.fields) {
+                if let Ok(fields) =
+                    custom_fields::read_custom_fields(path, uuid, &custom_fields_config.fields)
+                {
                     group.custom_fields = fields;
                 }
             }
@@ -797,7 +803,10 @@ fn update_custom_field(
     let path = std::path::PathBuf::from(&sch_path);
     let mut values = custom_fields::CustomFieldValues::new();
     values.insert(field_name.clone(), field_value.clone());
-    eprintln!("update_custom_field: saving {} = {:?} to {} (UUID: {})", field_name, field_value, sch_path, uuid);
+    eprintln!(
+        "update_custom_field: saving {} = {:?} to {} (UUID: {})",
+        field_name, field_value, sch_path, uuid
+    );
     match custom_fields::write_custom_fields(&path, &uuid, &values) {
         Ok(_) => {
             eprintln!("update_custom_field: successfully saved");
