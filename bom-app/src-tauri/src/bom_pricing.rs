@@ -11,7 +11,7 @@
 //! reference — the entire efficiency point of grouping first) are the
 //! caller's job (`crates/app/src/bom_ui.rs`), via
 //! `crate::parts_lookup::lookup_part_info`.
-
+#![allow(dead_code)]
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -42,6 +42,8 @@ pub struct PartGroup {
     /// `Last Checked` age, and write a fresh lookup back onto every
     /// instance so Populate BOM's own per-reference cache benefits too.
     pub instances: Vec<(PathBuf, String)>,
+    /// Custom field values: field_name → value (populated from first instance)
+    pub custom_fields: std::collections::HashMap<String, String>,
 }
 
 /// Groups `symbols` (typically `schematic::load_schematic_symbols`'s
@@ -90,6 +92,7 @@ pub fn group_placed_symbols(symbols: &[PlacedSymbol]) -> Vec<PartGroup> {
                 is_passive: is_passive_footprint(&sym.footprint),
                 per_board_qty: 1,
                 instances: vec![(sym.sch_path.clone(), sym.uuid.clone())],
+                custom_fields: Default::default(),
             });
         }
     }
@@ -111,24 +114,20 @@ pub fn is_passive_footprint(footprint: &str) -> bool {
     name.starts_with("R_") || name.starts_with("C_") || name.starts_with("L_")
 }
 
-/// Passives always get at least this many extra pieces on top of the
-/// percentage bump below, even for a tiny `needed` count — hand
-/// assembly/rework can easily eat a couple, and these parts are cheap
-/// enough that a handful of spares is never worth agonizing over.
-const PASSIVE_EXTRA_MINIMUM: u32 = 5;
-
 /// Pads `needed` with extra margin for passives — non-passives pass
 /// through unchanged. Passives get `needed + max(ceil(needed *
-/// extra_percent / 100), `[`PASSIVE_EXTRA_MINIMUM`]`)`: a percentage
-/// bump for larger quantities, with a flat floor so even a 1-off need
-/// still gets a few spares. `extra_percent` is a parameter (not a
-/// constant) so the UI can expose it as an adjustable field.
-pub fn margin_adjusted_quantity(needed: u32, is_passive: bool, extra_percent: u32) -> u32 {
+/// extra_percent / 100), extra_minimum)`: a percentage bump for larger
+/// quantities, with a flat floor so even a 1-off need still gets spares.
+/// When `extra_percent` is 0, no minimum is applied.
+pub fn margin_adjusted_quantity(needed: u32, is_passive: bool, extra_percent: u32, extra_minimum: u32) -> u32 {
     if !is_passive || needed == 0 {
         return needed;
     }
+    if extra_percent == 0 {
+        return needed;
+    }
     let percent_extra = (needed * extra_percent).div_ceil(100);
-    needed + percent_extra.max(PASSIVE_EXTRA_MINIMUM)
+    needed + percent_extra.max(extra_minimum)
 }
 
 /// The winning vendor/quantity for one [`PricedRow`] — see
@@ -481,25 +480,25 @@ mod tests {
 
     #[test]
     fn non_passives_are_never_padded() {
-        assert_eq!(margin_adjusted_quantity(6, false, 20), 6);
-        assert_eq!(margin_adjusted_quantity(1000, false, 50), 1000);
+        assert_eq!(margin_adjusted_quantity(6, false, 20, 5), 6);
+        assert_eq!(margin_adjusted_quantity(1000, false, 50, 5), 1000);
     }
 
     #[test]
     fn small_passive_quantities_get_the_flat_minimum() {
         // ceil(6 * 20 / 100) = 2, below the 5-piece floor.
-        assert_eq!(margin_adjusted_quantity(6, true, 20), 11);
+        assert_eq!(margin_adjusted_quantity(6, true, 20, 5), 11);
     }
 
     #[test]
     fn large_passive_quantities_get_the_percentage() {
         // ceil(100 * 20 / 100) = 20, above the floor.
-        assert_eq!(margin_adjusted_quantity(100, true, 20), 120);
+        assert_eq!(margin_adjusted_quantity(100, true, 20, 5), 120);
     }
 
     #[test]
     fn zero_needed_stays_zero_even_for_passives() {
-        assert_eq!(margin_adjusted_quantity(0, true, 20), 0);
+        assert_eq!(margin_adjusted_quantity(0, true, 20, 5), 0);
     }
 
     // ── choose_cheapest_offer ────────────────────────────────────────

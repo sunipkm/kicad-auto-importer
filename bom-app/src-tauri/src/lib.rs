@@ -10,6 +10,7 @@
 //! generation) — logic exclusive to this app, not shared with the egui
 //! `kicad-auto-importer` desktop app.
 
+mod bom_config;
 mod bom_pricing;
 mod bom_report;
 mod custom_fields;
@@ -65,6 +66,16 @@ fn load_vendor_credentials() -> VendorCredentials {
 #[tauri::command]
 fn save_vendor_credentials(settings: VendorCredentials) -> Result<(), String> {
     settings.save().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn load_bom_config() -> bom_config::BomConfig {
+    bom_config::BomConfig::load()
+}
+
+#[tauri::command]
+fn save_bom_config(config: bom_config::BomConfig) -> Result<(), String> {
+    config.save().map_err(|e| e.to_string())
 }
 
 /// Backs each vendor's "Test" button — confirms a key/credential pair is
@@ -580,7 +591,17 @@ fn generate_bom(
             .into_iter()
             .filter(|s| !s.dnp)
             .collect::<Vec<_>>();
-        let groups = bom_pricing::group_placed_symbols(&symbols);
+        let mut groups = bom_pricing::group_placed_symbols(&symbols);
+
+        // Load custom fields for each group from the first instance
+        let custom_fields_config = custom_fields::CustomFieldsConfig::load();
+        for group in &mut groups {
+            if let Some((path, uuid)) = group.instances.first() {
+                if let Ok(fields) = custom_fields::read_custom_fields(path, uuid, &custom_fields_config.fields) {
+                    group.custom_fields = fields;
+                }
+            }
+        }
 
         let request = BomBatchRequest {
             groups,

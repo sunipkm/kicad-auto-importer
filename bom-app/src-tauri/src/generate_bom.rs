@@ -95,6 +95,7 @@ pub fn run_bom_batch(
     }
 
     let now = chrono::Utc::now();
+    let bom_config = crate::bom_config::BomConfig::load();
     // Same global raw-candidate cache `populate_bom::run_lookup_batch`
     // uses, loaded/saved once per batch here too — a group whose MPN
     // some other project (or Populate BOM, earlier in this same run's
@@ -110,6 +111,7 @@ pub fn run_bom_batch(
             raw_needed,
             group.is_passive,
             passive_margin_percent,
+            bom_config.passive_extra_minimum,
         );
 
         // Reuse whichever instance in the group has the freshest cached
@@ -286,7 +288,7 @@ pub fn run_bom_batch(
     }
     if let Some(path) = &xlsx_path {
         let xlsx_cols = crate::xlsx_columns::XlsxColumnsConfig::load().visible_columns();
-        match bom_report::generate_priced_bom_xlsx(&priced_rows, board_qty, &xlsx_cols, path) {
+        match bom_report::generate_priced_bom_xlsx(&priced_rows, board_qty, xlsx_cols.as_slice(), path) {
             Ok(()) => on_event(BomEvent::Log(format!(
                 "Priced BOM spreadsheet saved to '{}'.",
                 path.display()

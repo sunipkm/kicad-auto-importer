@@ -1,8 +1,7 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
-// Mirrors `xlsx_columns::{XlsxColumn, XlsxColumnEntry, XlsxColumnsConfig}`.
-type XlsxColumnKey =
+type StandardColumn =
   | "Part"
   | "References"
   | "NeededQty"
@@ -15,6 +14,10 @@ type XlsxColumnKey =
   | "StockShortfall"
   | "LifecycleConcern";
 
+type XlsxColumnKey =
+  | { type: "standard"; value: StandardColumn }
+  | { type: "custom"; value: string };
+
 interface XlsxColumnEntry {
   column: XlsxColumnKey;
   visible: boolean;
@@ -24,7 +27,7 @@ interface XlsxColumnsConfig {
   entries: XlsxColumnEntry[];
 }
 
-const COLUMN_LABEL: Record<XlsxColumnKey, string> = {
+const COLUMN_LABEL: Record<StandardColumn, string> = {
   Part: "Part",
   References: "References",
   NeededQty: "Need",
@@ -38,7 +41,21 @@ const COLUMN_LABEL: Record<XlsxColumnKey, string> = {
   LifecycleConcern: "Lifecycle Concern",
 };
 
-const MANDATORY: Set<XlsxColumnKey> = new Set(["Part", "References", "NeededQty"]);
+function getColumnLabel(col: XlsxColumnKey): string {
+  if (col.type === "standard") {
+    return COLUMN_LABEL[col.value];
+  }
+  return col.value;
+}
+
+function getColumnId(col: XlsxColumnKey): string {
+  if (col.type === "standard") {
+    return col.value;
+  }
+  return `custom-${col.value}`;
+}
+
+const MANDATORY: Set<string> = new Set(["Part", "References", "NeededQty"]);
 
 export function XlsxColumnsPanel() {
   const [entries, setEntries] = useState<XlsxColumnEntry[] | null>(null);
@@ -53,7 +70,9 @@ export function XlsxColumnsPanel() {
 
   function toggle(index: number) {
     if (!entries) return;
-    if (MANDATORY.has(entries[index].column)) return;
+    const col = entries[index].column;
+    const isMandatory = col.type === "standard" && MANDATORY.has(col.value);
+    if (isMandatory) return;
     setEntries(entries.map((e, i) => (i === index ? { ...e, visible: !e.visible } : e)));
     setStatus(null);
   }
@@ -88,16 +107,17 @@ export function XlsxColumnsPanel() {
     <>
       <div className="xlsx-col-list">
         {entries.map((entry, i) => {
-          const mandatory = MANDATORY.has(entry.column);
-          const label = COLUMN_LABEL[entry.column] ?? entry.column;
+          const isMandatory = entry.column.type === "standard" && MANDATORY.has(entry.column.value);
+          const label = getColumnLabel(entry.column);
+          const columnId = getColumnId(entry.column);
           return (
-            <div key={entry.column} className="xlsx-col-row">
+            <div key={columnId} className="xlsx-col-row">
               <input
                 type="checkbox"
                 checked={entry.visible}
-                disabled={mandatory}
+                disabled={isMandatory}
                 onChange={() => toggle(i)}
-                title={mandatory ? "Always included" : undefined}
+                title={isMandatory ? "Always included" : undefined}
               />
               <span className="xlsx-col-label">{label}</span>
               <button

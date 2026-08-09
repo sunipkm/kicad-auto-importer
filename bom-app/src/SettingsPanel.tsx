@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { BomConfigPanel } from "./BomConfigPanel";
 import { SymbolColumnsPanel } from "./SymbolColumnsPanel";
 import { XlsxColumnsPanel } from "./XlsxColumnsPanel";
 
@@ -191,6 +192,11 @@ export function SettingsPanel() {
                 </button>
               </div>
               {status && <p className="field-hint">{status}</p>}
+
+              <details className="settings-section">
+                <summary className="settings-section-title">BOM Settings…</summary>
+                <BomConfigPanel />
+              </details>
 
               <details className="settings-section">
                 <summary className="settings-section-title">Symbol Table Columns…</summary>

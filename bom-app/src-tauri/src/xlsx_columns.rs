@@ -9,12 +9,22 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::bom_report::XlsxColumn;
+use crate::custom_fields;
 
 const CONFIG_FILENAME: &str = "xlsx_columns.json";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", content = "value")]
+pub enum XlsxColumnKey {
+    #[serde(rename = "standard")]
+    Standard(XlsxColumn),
+    #[serde(rename = "custom")]
+    Custom(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct XlsxColumnEntry {
-    pub column: XlsxColumn,
+    pub column: XlsxColumnKey,
     pub visible: bool,
 }
 
@@ -29,7 +39,7 @@ impl Default for XlsxColumnsConfig {
             entries: XlsxColumn::ALL
                 .iter()
                 .map(|&col| XlsxColumnEntry {
-                    column: col,
+                    column: XlsxColumnKey::Standard(col),
                     visible: true,
                 })
                 .collect(),
@@ -43,7 +53,8 @@ impl XlsxColumnsConfig {
     }
 
     /// Never fails — missing or corrupt config → default. Also defensively
-    /// re-inserts any column from XlsxColumn::ALL that isn't in the saved config.
+    /// re-inserts any column from XlsxColumn::ALL that isn't in the saved config,
+    /// and syncs with the current custom fields config.
     pub fn load() -> Self {
         let saved: Option<Self> = Self::config_path()
             .and_then(|p| fs::read_to_string(p).ok())
@@ -51,11 +62,40 @@ impl XlsxColumnsConfig {
 
         let mut config = saved.unwrap_or_default();
 
-        // Add any column not yet in the saved config (forward-compatibility).
+        // Add any standard column not yet in the saved config (forward-compatibility).
         for &col in XlsxColumn::ALL {
-            if !config.entries.iter().any(|e| e.column == col) {
+            if !config.entries.iter().any(|e| matches!(e.column, XlsxColumnKey::Standard(c) if c == col)) {
                 config.entries.push(XlsxColumnEntry {
-                    column: col,
+                    column: XlsxColumnKey::Standard(col),
+                    visible: true,
+                });
+            }
+        }
+
+        // Sync with custom fields: add new ones, remove deleted ones.
+        let custom_fields_config = custom_fields::CustomFieldsConfig::load();
+        let current_custom_fields: std::collections::HashSet<_> = custom_fields_config.fields.iter().cloned().collect();
+        let saved_custom_fields: std::collections::HashSet<_> = config.entries
+            .iter()
+            .filter_map(|e| match &e.column {
+                XlsxColumnKey::Custom(name) => Some(name.clone()),
+                _ => None,
+            })
+            .collect();
+
+        // Remove custom fields that no longer exist in the config.
+        config.entries.retain(|e| {
+            match &e.column {
+                XlsxColumnKey::Custom(name) => current_custom_fields.contains(name),
+                _ => true,
+            }
+        });
+
+        // Add new custom fields that don't exist in the config yet.
+        for field_name in &current_custom_fields {
+            if !saved_custom_fields.contains(field_name) {
+                config.entries.push(XlsxColumnEntry {
+                    column: XlsxColumnKey::Custom(field_name.clone()),
                     visible: true,
                 });
             }
@@ -63,7 +103,7 @@ impl XlsxColumnsConfig {
 
         // Mandatory columns can never be hidden.
         for entry in &mut config.entries {
-            if entry.column.is_mandatory() {
+            if entry.is_mandatory() {
                 entry.visible = true;
             }
         }
@@ -87,11 +127,18 @@ impl XlsxColumnsConfig {
     }
 
     /// The columns that should actually appear in an export, in entry order.
-    pub fn visible_columns(&self) -> Vec<XlsxColumn> {
+    pub fn visible_columns(&self) -> Vec<XlsxColumnKey> {
         self.entries
             .iter()
             .filter(|e| e.visible)
-            .map(|e| e.column)
+            .map(|e| e.column.clone())
             .collect()
+    }
+}
+
+impl XlsxColumnEntry {
+    /// Custom columns are never mandatory, only standard columns can be.
+    pub fn is_mandatory(&self) -> bool {
+        matches!(self.column, XlsxColumnKey::Standard(col) if col.is_mandatory())
     }
 }

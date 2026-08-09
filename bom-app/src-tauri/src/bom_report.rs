@@ -902,7 +902,7 @@ pub fn generate_priced_bom(
 pub fn generate_priced_bom_xlsx(
     rows: &[bom_pricing::PricedRow],
     board_qty: u32,
-    columns: &[XlsxColumn],
+    columns: &[crate::xlsx_columns::XlsxColumnKey],
     out_path: &Path,
 ) -> Result<(), ReportError> {
     let mut workbook = Workbook::new();
@@ -923,7 +923,11 @@ pub fn generate_priced_bom_xlsx(
     let bold_money_format = XlsxFormat::new().set_bold().set_num_format("$0.00");
 
     for (col, xcol) in columns.iter().enumerate() {
-        sheet.write_with_format(0, col as u16, xcol.label(), &header_format)?;
+        let label = match xcol {
+            crate::xlsx_columns::XlsxColumnKey::Standard(c) => c.label(),
+            crate::xlsx_columns::XlsxColumnKey::Custom(name) => name,
+        };
+        sheet.write_with_format(0, col as u16, label, &header_format)?;
     }
 
     let mut grand_total = 0.0f64;
@@ -944,76 +948,86 @@ pub fn generate_priced_bom_xlsx(
             grand_total += ch.total_price;
         }
 
-        for (col, &xcol) in columns.iter().enumerate() {
+        for (col, xcol) in columns.iter().enumerate() {
             let c = col as u16;
             match xcol {
-                XlsxColumn::Part => {
-                    let v = priced_part_label(row);
-                    sheet.write_with_format(row_idx, c, &v, text_fmt)?;
-                }
-                XlsxColumn::References => {
-                    let v = row.group.references.join(", ");
-                    sheet.write_with_format(row_idx, c, &v, text_fmt)?;
-                }
-                XlsxColumn::NeededQty => {
-                    sheet.write_with_format(row_idx, c, row.needed_qty, text_fmt)?;
-                }
-                XlsxColumn::PurchaseQty => {
-                    if let Ok(ch) = &row.outcome {
-                        sheet.write_with_format(row_idx, c, ch.purchase_qty, text_fmt)?;
+                crate::xlsx_columns::XlsxColumnKey::Standard(col_type) => {
+                    match col_type {
+                        XlsxColumn::Part => {
+                            let v = priced_part_label(row);
+                            sheet.write_with_format(row_idx, c, &v, text_fmt)?;
+                        }
+                        XlsxColumn::References => {
+                            let v = row.group.references.join(", ");
+                            sheet.write_with_format(row_idx, c, &v, text_fmt)?;
+                        }
+                        XlsxColumn::NeededQty => {
+                            sheet.write_with_format(row_idx, c, row.needed_qty, text_fmt)?;
+                        }
+                        XlsxColumn::PurchaseQty => {
+                            if let Ok(ch) = &row.outcome {
+                                sheet.write_with_format(row_idx, c, ch.purchase_qty, text_fmt)?;
+                            }
+                        }
+                        XlsxColumn::Vendor => {
+                            if let Ok(ch) = &row.outcome {
+                                sheet.write_with_format(row_idx, c, &ch.seller, text_fmt)?;
+                            }
+                        }
+                        XlsxColumn::UnitPrice => {
+                            if let Ok(ch) = &row.outcome {
+                                sheet.write_with_format(row_idx, c, ch.unit_price, money_fmt)?;
+                            }
+                        }
+                        XlsxColumn::TotalPrice => {
+                            if let Ok(ch) = &row.outcome {
+                                sheet.write_with_format(row_idx, c, ch.total_price, money_fmt)?;
+                            }
+                        }
+                        XlsxColumn::InStock => {
+                            if let Ok(ch) = &row.outcome {
+                                sheet.write_with_format(row_idx, c, ch.in_stock, text_fmt)?;
+                            }
+                        }
+                        XlsxColumn::StockQty => {
+                            if let Ok(ch) = &row.outcome {
+                                sheet.write_with_format(row_idx, c, ch.stock_quantity, text_fmt)?;
+                            }
+                        }
+                        XlsxColumn::StockShortfall => {
+                            if let Ok(ch) = &row.outcome {
+                                let sf = ch.stock_quantity < u64::from(ch.purchase_qty);
+                                sheet.write_with_format(row_idx, c, sf, text_fmt)?;
+                            }
+                        }
+                        XlsxColumn::LifecycleConcern => match &row.outcome {
+                            Ok(ch) => {
+                                sheet.write_with_format(row_idx, c, ch.lifecycle_concern, text_fmt)?;
+                            }
+                            Err(msg) => {
+                                sheet.write_with_format(
+                                    row_idx,
+                                    c,
+                                    format!("LOOKUP FAILED: {msg}"),
+                                    text_fmt,
+                                )?;
+                            }
+                        },
                     }
                 }
-                XlsxColumn::Vendor => {
-                    if let Ok(ch) = &row.outcome {
-                        sheet.write_with_format(row_idx, c, &ch.seller, text_fmt)?;
-                    }
+                crate::xlsx_columns::XlsxColumnKey::Custom(field_name) => {
+                    let value = row.group.custom_fields.get(field_name).cloned().unwrap_or_default();
+                    sheet.write_with_format(row_idx, c, &value, text_fmt)?;
                 }
-                XlsxColumn::UnitPrice => {
-                    if let Ok(ch) = &row.outcome {
-                        sheet.write_with_format(row_idx, c, ch.unit_price, money_fmt)?;
-                    }
-                }
-                XlsxColumn::TotalPrice => {
-                    if let Ok(ch) = &row.outcome {
-                        sheet.write_with_format(row_idx, c, ch.total_price, money_fmt)?;
-                    }
-                }
-                XlsxColumn::InStock => {
-                    if let Ok(ch) = &row.outcome {
-                        sheet.write_with_format(row_idx, c, ch.in_stock, text_fmt)?;
-                    }
-                }
-                XlsxColumn::StockQty => {
-                    if let Ok(ch) = &row.outcome {
-                        sheet.write_with_format(row_idx, c, ch.stock_quantity, text_fmt)?;
-                    }
-                }
-                XlsxColumn::StockShortfall => {
-                    if let Ok(ch) = &row.outcome {
-                        let sf = ch.stock_quantity < u64::from(ch.purchase_qty);
-                        sheet.write_with_format(row_idx, c, sf, text_fmt)?;
-                    }
-                }
-                XlsxColumn::LifecycleConcern => match &row.outcome {
-                    Ok(ch) => {
-                        sheet.write_with_format(row_idx, c, ch.lifecycle_concern, text_fmt)?;
-                    }
-                    Err(msg) => {
-                        sheet.write_with_format(
-                            row_idx,
-                            c,
-                            format!("LOOKUP FAILED: {msg}"),
-                            text_fmt,
-                        )?;
-                    }
-                },
             }
         }
         row_idx += 1;
     }
 
     sheet.write_with_format(row_idx, 0, "Total", &bold_format)?;
-    if let Some(total_col) = columns.iter().position(|&c| c == XlsxColumn::TotalPrice) {
+    if let Some(total_col) = columns.iter().position(|c| {
+        matches!(c, crate::xlsx_columns::XlsxColumnKey::Standard(XlsxColumn::TotalPrice))
+    }) {
         sheet.write_with_format(row_idx, total_col as u16, grand_total, &bold_money_format)?;
     }
     row_idx += 1;
@@ -1305,6 +1319,7 @@ mod tests {
             is_passive: false,
             per_board_qty: references.len() as u32,
             instances: Vec::new(),
+            custom_fields: Default::default(),
         }
     }
 
@@ -1375,7 +1390,11 @@ mod tests {
             priced_ok_row("RC0603FR", &["R1"]),     // 1 * $0.10 = $0.10
             priced_failed_row("UNKNOWN123", &["U9"]),
         ];
-        generate_priced_bom_xlsx(&rows, 5, XlsxColumn::ALL, &out_path).unwrap();
+        let cols: Vec<_> = XlsxColumn::ALL
+            .iter()
+            .map(|&c| crate::xlsx_columns::XlsxColumnKey::Standard(c))
+            .collect();
+        generate_priced_bom_xlsx(&rows, 5, &cols, &out_path).unwrap();
 
         let range = open_priced_sheet(&out_path);
         assert_eq!(range.get_value((0, 0)).unwrap().get_string(), Some("Part"));
@@ -1408,7 +1427,11 @@ mod tests {
             chosen.purchase_qty = 10;
             chosen.stock_quantity = 3;
         }
-        generate_priced_bom_xlsx(&[row], 1, XlsxColumn::ALL, &out_path).unwrap();
+        let cols: Vec<_> = XlsxColumn::ALL
+            .iter()
+            .map(|&c| crate::xlsx_columns::XlsxColumnKey::Standard(c))
+            .collect();
+        generate_priced_bom_xlsx(&[row], 1, &cols, &out_path).unwrap();
 
         let range = open_priced_sheet(&out_path);
         assert_eq!(range.get_value((1, 8)).unwrap().get_float(), Some(3.0));
@@ -1419,7 +1442,11 @@ mod tests {
     fn xlsx_creates_missing_parent_directories() {
         let dir = tempdir().unwrap();
         let out_path = dir.path().join("nested").join("dir").join("priced.xlsx");
-        generate_priced_bom_xlsx(&[], 1, XlsxColumn::ALL, &out_path).unwrap();
+        let cols: Vec<_> = XlsxColumn::ALL
+            .iter()
+            .map(|&c| crate::xlsx_columns::XlsxColumnKey::Standard(c))
+            .collect();
+        generate_priced_bom_xlsx(&[], 1, &cols, &out_path).unwrap();
         assert!(out_path.is_file());
     }
 }
