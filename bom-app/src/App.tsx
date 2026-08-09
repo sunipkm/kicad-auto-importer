@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { SettingsPanel } from "./SettingsPanel";
@@ -20,6 +20,8 @@ function App() {
   const [info, setInfo] = useState<ProjectInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("populate");
+  const [isTabChanging, setIsTabChanging] = useState(false);
+  const tabChangeTimeoutRef = useRef<number | null>(null);
 
   async function openProject(path: string) {
     if (!path.trim()) return;
@@ -56,6 +58,16 @@ function App() {
     setError(null);
   }
 
+  function handleTabChange(newTab: Tab) {
+    setIsTabChanging(true);
+    if (tabChangeTimeoutRef.current) clearTimeout(tabChangeTimeoutRef.current);
+    tabChangeTimeoutRef.current = window.setTimeout(() => {
+      setTab(newTab);
+      setIsTabChanging(false);
+      tabChangeTimeoutRef.current = null;
+    }, 0);
+  }
+
   return (
     <div className="app-shell">
       <header className="app-header">
@@ -76,6 +88,40 @@ function App() {
         <SettingsPanel />
       </header>
 
+      {isTabChanging && (
+        <div style={{
+          position: "fixed",
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          background: "linear-gradient(135deg, rgba(255,255,255,0.1) 0%, rgba(200,220,255,0.05) 100%)",
+          backdropFilter: "blur(10px)",
+          display: "flex",
+          flexDirection: "column",
+          justifyContent: "center",
+          alignItems: "center",
+          zIndex: 99999,
+        }}>
+          <div
+            style={{
+              width: "60px",
+              height: "60px",
+              border: "3px solid rgba(255,255,255,0.3)",
+              borderTop: "3px solid rgba(0,100,255,0.8)",
+              borderRadius: "50%",
+              animation: "spin 1s linear infinite",
+              marginBottom: "2rem",
+            }}
+          />
+          <p style={{ color: "#e0e0e0", fontSize: "1.1rem", margin: 0 }}>Loading…</p>
+          <style>{`
+            @keyframes spin {
+              to { transform: rotate(360deg); }
+            }
+          `}</style>
+        </div>
+      )}
       <main className="app-main">
         {!info ? (
           <div className="app-main-centered">
@@ -112,14 +158,14 @@ function App() {
               <button
                 type="button"
                 className={`tab ${tab === "populate" ? "active" : ""}`}
-                onClick={() => setTab("populate")}
+                onClick={() => handleTabChange("populate")}
               >
                 Populate BOM
               </button>
               <button
                 type="button"
                 className={`tab ${tab === "generate" ? "active" : ""}`}
-                onClick={() => setTab("generate")}
+                onClick={() => handleTabChange("generate")}
               >
                 Generate BOM
               </button>

@@ -16,6 +16,7 @@ regex = "1"
 dirs = "6"
 thiserror = "2"
 tempfile = "3"
+rayon = "1"
 sysinfo = { version = "0.39", optional = true }
 
 [features]

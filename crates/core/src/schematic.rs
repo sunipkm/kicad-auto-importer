@@ -25,6 +25,9 @@
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+
+use rayon::prelude::*;
 
 use crate::sexp::{Child, SexpNode};
 use crate::symbol_importer;
@@ -130,32 +133,51 @@ pub fn load_schematic_symbols(project_dir: &Path, mut log: impl FnMut(&str)) -> 
         return Vec::new();
     };
 
+    // Phase 1: Collect all file paths (single-threaded to handle hierarchy correctly)
     let mut visited_files = HashSet::new();
-    let mut seen_refs = HashSet::new();
-    let mut out = Vec::new();
-    collect_from_file(
+    let mut file_paths = Vec::new();
+    collect_file_paths(
         &root,
         &mut visited_files,
-        &mut seen_refs,
-        &mut out,
+        &mut file_paths,
         &mut log,
     );
+
+    // Phase 2: Load and parse all files in parallel
+    let log_mutex = Mutex::new(Vec::<String>::new());
+    let all_symbols: Vec<PlacedSymbol> = file_paths
+        .par_iter()
+        .flat_map(|path| {
+            load_symbols_from_file(path, &log_mutex)
+        })
+        .collect();
+
+    // Log any collected messages
+    if let Ok(messages) = log_mutex.lock() {
+        for msg in messages.iter() {
+            log(msg);
+        }
+    }
+
+    let mut out = all_symbols;
     sort_by_reference(&mut out);
     out
 }
 
-fn collect_from_file(
+fn collect_file_paths(
     path: &Path,
     visited_files: &mut HashSet<PathBuf>,
-    seen_refs: &mut HashSet<String>,
-    out: &mut Vec<PlacedSymbol>,
+    file_paths: &mut Vec<PathBuf>,
     log: &mut impl FnMut(&str),
 ) {
     let canon = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    if !visited_files.insert(canon) {
-        return; // already visited — cycle guard, and dedupes a sheet reused more than once
+    if !visited_files.insert(canon.clone()) {
+        return; // already visited — cycle guard
     }
 
+    file_paths.push(path.to_path_buf());
+
+    // Parse to find child sheets
     let Ok(text) = fs::read_to_string(path) else {
         log(&format!(
             "  \u{26a0} Could not read '{}' \u{2014} skipped.",
@@ -171,9 +193,50 @@ fn collect_from_file(
         return;
     };
 
-    // `root.find_all("symbol")` only ever matches *direct* children of
-    // `(kicad_sch ...)` — placed instances — never the cached library
-    // definitions nested one level deeper inside `(lib_symbols ...)`.
+    let dir = path.parent().unwrap_or_else(|| Path::new("."));
+    for sheet in root.find_all("sheet") {
+        let sheetfile = property_value(sheet, "Sheetfile");
+        if sheetfile.is_empty() {
+            continue;
+        }
+        let sub_path = dir.join(&sheetfile);
+        if sub_path.is_file() {
+            collect_file_paths(&sub_path, visited_files, file_paths, log);
+        } else {
+            log(&format!(
+                "  \u{26a0} Sub-sheet '{sheetfile}' referenced from '{}' not found \u{2014} skipped.",
+                path.display()
+            ));
+        }
+    }
+}
+
+fn load_symbols_from_file(
+    path: &Path,
+    log_mutex: &Mutex<Vec<String>>,
+) -> Vec<PlacedSymbol> {
+    let Ok(text) = fs::read_to_string(path) else {
+        if let Ok(mut logs) = log_mutex.lock() {
+            logs.push(format!(
+                "  \u{26a0} Could not read '{}' \u{2014} skipped.",
+                path.display()
+            ));
+        }
+        return Vec::new();
+    };
+    let Ok(root) = SexpNode::parse(&text) else {
+        if let Ok(mut logs) = log_mutex.lock() {
+            logs.push(format!(
+                "  \u{26a0} Could not parse '{}' \u{2014} skipped.",
+                path.display()
+            ));
+        }
+        return Vec::new();
+    };
+
+    let mut out = Vec::new();
+    let mut seen_refs = HashSet::new();
+
     for sym in root.find_all("symbol") {
         let Some(lib_id) = sym
             .find(&["lib_id"])
@@ -227,22 +290,7 @@ fn collect_from_file(
         });
     }
 
-    let dir = path.parent().unwrap_or_else(|| Path::new("."));
-    for sheet in root.find_all("sheet") {
-        let sheetfile = property_value(sheet, "Sheetfile");
-        if sheetfile.is_empty() {
-            continue;
-        }
-        let sub_path = dir.join(&sheetfile);
-        if sub_path.is_file() {
-            collect_from_file(&sub_path, visited_files, seen_refs, out, log);
-        } else {
-            log(&format!(
-                "  \u{26a0} Sub-sheet '{sheetfile}' referenced from '{}' not found \u{2014} skipped.",
-                path.display()
-            ));
-        }
-    }
+    out
 }
 
 fn property_value(node: &SexpNode, key: &str) -> String {

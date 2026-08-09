@@ -12,6 +12,7 @@
 
 mod bom_pricing;
 mod bom_report;
+mod custom_fields;
 pub mod digikey;
 mod generate_bom;
 mod http_agent;
@@ -458,6 +459,12 @@ struct PartGroupRow {
     references: Vec<String>,
     per_board_qty: u32,
     is_passive: bool,
+    /// Path to the first instance's schematic file (for custom field access)
+    sch_path: String,
+    /// UUID of the first instance (for custom field access)
+    uuid: String,
+    /// Custom field values: field_name → value
+    custom_fields: std::collections::HashMap<String, String>,
 }
 
 #[tauri::command]
@@ -467,15 +474,32 @@ fn list_part_groups(project_dir: String) -> Vec<PartGroupRow> {
         .into_iter()
         .filter(|s| !s.dnp)
         .collect::<Vec<_>>();
+    let config = custom_fields::CustomFieldsConfig::load();
+
     bom_pricing::group_placed_symbols(&symbols)
         .into_iter()
         .enumerate()
-        .map(|(index, group)| PartGroupRow {
-            index,
-            display_name: group.display_name,
-            references: group.references,
-            per_board_qty: group.per_board_qty,
-            is_passive: group.is_passive,
+        .map(|(index, group)| {
+            let (sch_path, uuid) = group.instances.first()
+                .map(|(p, u)| (p.to_string_lossy().to_string(), u.clone()))
+                .unwrap_or_default();
+
+            let custom_fields = group.instances.first()
+                .and_then(|(path, uuid)| {
+                    custom_fields::read_custom_fields(path, uuid, &config.fields).ok()
+                })
+                .unwrap_or_default();
+
+            PartGroupRow {
+                index,
+                display_name: group.display_name,
+                references: group.references,
+                per_board_qty: group.per_board_qty,
+                is_passive: group.is_passive,
+                sch_path,
+                uuid,
+                custom_fields,
+            }
         })
         .collect()
 }
@@ -732,6 +756,40 @@ fn save_symbol_columns_config(config: symbol_columns::SymbolColumnsConfig) -> Re
     config.save().map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+fn load_custom_fields_config() -> custom_fields::CustomFieldsConfig {
+    custom_fields::CustomFieldsConfig::load()
+}
+
+#[tauri::command]
+fn save_custom_fields_config(config: custom_fields::CustomFieldsConfig) -> Result<(), String> {
+    config.save().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn update_custom_field(
+    sch_path: String,
+    uuid: String,
+    field_name: String,
+    field_value: String,
+) -> Result<(), String> {
+    let path = std::path::PathBuf::from(&sch_path);
+    let mut values = custom_fields::CustomFieldValues::new();
+    values.insert(field_name.clone(), field_value.clone());
+    eprintln!("update_custom_field: saving {} = {:?} to {} (UUID: {})", field_name, field_value, sch_path, uuid);
+    match custom_fields::write_custom_fields(&path, &uuid, &values) {
+        Ok(_) => {
+            eprintln!("update_custom_field: successfully saved");
+            Ok(())
+        }
+        Err(e) => {
+            let err_msg = format!("Failed to save custom field: {}", e);
+            eprintln!("update_custom_field: {}", err_msg);
+            Err(err_msg)
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     #[cfg(target_os = "linux")]
@@ -761,6 +819,9 @@ pub fn run() {
             save_xlsx_columns_config,
             load_symbol_columns_config,
             save_symbol_columns_config,
+            load_custom_fields_config,
+            save_custom_fields_config,
+            update_custom_field,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

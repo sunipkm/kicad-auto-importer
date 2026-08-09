@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { confirm, save } from "@tauri-apps/plugin-dialog";
@@ -10,6 +10,13 @@ interface PartGroupRow {
   references: string[];
   per_board_qty: number;
   is_passive: boolean;
+  sch_path: string;
+  uuid: string;
+  custom_fields: Record<string, string>;
+}
+
+interface CustomFieldsConfig {
+  fields: string[];
 }
 
 interface PartsCredentials {
@@ -84,6 +91,11 @@ export function GenerateBom({ projectDir }: { projectDir: string }) {
   const [passiveMarginPercent, setPassiveMarginPercent] = useState(20);
   const [forceRecheck, setForceRecheck] = useState(false);
   const [preferredVendor, setPreferredVendor] = useState<string | null>(null);
+  const [customFieldsConfig, setCustomFieldsConfig] = useState<CustomFieldsConfig>({ fields: [] });
+  const [editingCustomField, setEditingCustomField] = useState<{ groupIndex: number; fieldName: string; value: string } | null>(null);
+  const [newFieldName, setNewFieldName] = useState("");
+  const [showAddField, setShowAddField] = useState(false);
+  const inputRefs = useRef<Record<string, HTMLInputElement | null>>({});
   const [logLines, setLogLines] = useState<string[]>([]);
   const [status, setStatus] = useState<string | null>(null);
   const [inProgress, setInProgress] = useState(false);
@@ -109,10 +121,60 @@ export function GenerateBom({ projectDir }: { projectDir: string }) {
     ]);
   }
 
+  async function loadCustomFields() {
+    const config = await invoke<CustomFieldsConfig>("load_custom_fields_config");
+    setCustomFieldsConfig(config);
+  }
+
   useEffect(() => {
     loadGroups();
+    loadCustomFields();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectDir]);
+
+  async function addCustomField() {
+    if (!newFieldName.trim()) return;
+    const updated = { ...customFieldsConfig, fields: [...customFieldsConfig.fields, newFieldName.trim()] };
+    await invoke("save_custom_fields_config", { config: updated });
+    setCustomFieldsConfig(updated);
+    setNewFieldName("");
+    setShowAddField(false);
+  }
+
+  async function saveCustomFieldEdit(groupIndex?: number, fieldName?: string, value?: string) {
+    const target = groupIndex !== undefined ? groupIndex : editingCustomField?.groupIndex;
+    const field = fieldName !== undefined ? fieldName : editingCustomField?.fieldName;
+    const val = value !== undefined ? value : editingCustomField?.value;
+
+    if (target === undefined || !field || val === undefined) return;
+
+    const group = groups[target];
+    if (!group) return;
+
+    try {
+      await invoke("update_custom_field", {
+        schPath: group.sch_path,
+        uuid: group.uuid,
+        fieldName: field,
+        fieldValue: val,
+      });
+      console.log(`Saved custom field: ${field} = ${val} for group ${target}`);
+
+      // Update local state
+      setGroups((prev) =>
+        prev.map((g, i) =>
+          i === target
+            ? { ...g, custom_fields: { ...g.custom_fields, [field]: val } }
+            : g
+        )
+      );
+    } catch (error) {
+      console.error(`Failed to save custom field: ${error}`);
+      setStatus(`Failed to save ${field}: ${error}`);
+    } finally {
+      setEditingCustomField(null);
+    }
+  }
 
   async function generate() {
     if (groups.length === 0) {
@@ -230,6 +292,14 @@ export function GenerateBom({ projectDir }: { projectDir: string }) {
       </div>
 
       <div className="toolbar">
+        <button
+          type="button"
+          className="btn btn-sm"
+          onClick={() => setShowAddField(true)}
+          disabled={inProgress}
+        >
+          + Add Custom Column
+        </button>
         <label>
           Boards:
           <input
@@ -287,6 +357,23 @@ export function GenerateBom({ projectDir }: { projectDir: string }) {
               <th>References</th>
               <th>Need</th>
               <th>Result</th>
+              {customFieldsConfig.fields.map((fieldName) => (
+                <th key={fieldName}>
+                  {fieldName}
+                  <button
+                    type="button"
+                    className="btn btn-icon"
+                    onClick={() => {
+                      const updated = { ...customFieldsConfig, fields: customFieldsConfig.fields.filter((f) => f !== fieldName) };
+                      invoke("save_custom_fields_config", { config: updated });
+                      setCustomFieldsConfig(updated);
+                    }}
+                    title="Remove column"
+                  >
+                    ✕
+                  </button>
+                </th>
+              ))}
             </tr>
           </thead>
           <tbody>
@@ -312,6 +399,52 @@ export function GenerateBom({ projectDir }: { projectDir: string }) {
                         );
                       })()}
                   </td>
+                  {customFieldsConfig.fields.map((fieldName) => {
+                    const inputKey = `${group.index}-${fieldName}`;
+                    const isEditing = editingCustomField?.groupIndex === group.index && editingCustomField.fieldName === fieldName;
+                    return (
+                      <td
+                        key={fieldName}
+                        onClick={() => {
+                          setEditingCustomField({ groupIndex: group.index, fieldName, value: group.custom_fields[fieldName] || "" });
+                          setTimeout(() => inputRefs.current[inputKey]?.focus(), 0);
+                        }}
+                        style={{ cursor: "pointer" }}
+                      >
+                        <input
+                          ref={(el) => {
+                            if (el) inputRefs.current[inputKey] = el;
+                          }}
+                          type="text"
+                          value={isEditing ? editingCustomField.value : group.custom_fields[fieldName] || ""}
+                          onChange={(e) => {
+                            setEditingCustomField({ groupIndex: group.index, fieldName, value: e.currentTarget.value });
+                          }}
+                          onBlur={(e) => saveCustomFieldEdit(group.index, fieldName, e.currentTarget.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") saveCustomFieldEdit(group.index, fieldName, e.currentTarget.value);
+                            if (e.key === "Escape") {
+                              setEditingCustomField(null);
+                              e.currentTarget.value = group.custom_fields[fieldName] || "";
+                            }
+                          }}
+                          disabled={inProgress}
+                          style={{
+                            width: "100%",
+                            padding: "4px",
+                            border: isEditing ? "2px solid #0066cc" : "1px solid transparent",
+                            backgroundColor: "transparent",
+                            color: "inherit",
+                            cursor: "text",
+                            appearance: "none",
+                            fontFamily: "inherit",
+                            fontSize: "inherit",
+                            outline: "none",
+                          } as React.CSSProperties}
+                        />
+                      </td>
+                    );
+                  })}
                 </tr>
               );
             })}
@@ -341,6 +474,35 @@ export function GenerateBom({ projectDir }: { projectDir: string }) {
         <summary>Detail Log</summary>
         <pre>{logLines.join("\n")}</pre>
       </details>
+
+      {showAddField && (
+        <div className="modal-overlay" onClick={() => setShowAddField(false)}>
+          <div className="modal-panel" onClick={(e) => e.stopPropagation()}>
+            <h3>Add Custom Field</h3>
+            <label>
+              Field name:
+              <input
+                type="text"
+                value={newFieldName}
+                onChange={(e) => setNewFieldName(e.currentTarget.value)}
+                placeholder="e.g., Supplier, Cost Center, Part ID"
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") addCustomField();
+                  if (e.key === "Escape") setShowAddField(false);
+                }}
+              />
+            </label>
+            <div style={{ display: "flex", gap: "0.5rem", marginTop: "1rem" }}>
+              <button type="button" className="btn btn-primary" onClick={addCustomField}>
+                Add
+              </button>
+              <button type="button" className="btn" onClick={() => setShowAddField(false)}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="form-actions">
         <button type="button" className="btn btn-primary" onClick={generate} disabled={inProgress}>
