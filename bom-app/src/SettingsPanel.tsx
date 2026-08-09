@@ -12,6 +12,7 @@ interface VendorCredentials {
   mouser_api_key: string;
   digikey_client_id: string;
   digikey_client_secret: string;
+  arrow_api_key: string;
 }
 
 type TestState = "idle" | "testing" | "ok" | { error: string };
@@ -34,6 +35,7 @@ export function SettingsPanel() {
   const [saving, setSaving] = useState(false);
   const [mouserTest, setMouserTest] = useState<TestState>("idle");
   const [digikeyTest, setDigikeyTest] = useState<TestState>("idle");
+  const [arrowTest, setArrowTest] = useState<TestState>("idle");
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -92,8 +94,20 @@ export function SettingsPanel() {
     }
   }
 
+  async function testArrow() {
+    if (!settings) return;
+    setArrowTest("testing");
+    try {
+      await invoke("test_arrow_credentials", { apiKey: settings.arrow_api_key });
+      setArrowTest("ok");
+    } catch (exc) {
+      setArrowTest({ error: String(exc) });
+    }
+  }
+
   const mouserStatus = testStatusLabel(mouserTest);
   const digikeyStatus = testStatusLabel(digikeyTest);
+  const arrowStatus = testStatusLabel(arrowTest);
 
   return (
     <div className="settings-popover" ref={containerRef}>
@@ -183,6 +197,31 @@ export function SettingsPanel() {
                 </button>
                 {digikeyStatus && (
                   <span className={digikeyStatus.className}>{digikeyStatus.text}</span>
+                )}
+              </div>
+
+              <label className="settings-field">
+                Arrow API Key
+                <input
+                  type="password"
+                  value={settings.arrow_api_key}
+                  onChange={(e) => {
+                    setSettings({ ...settings, arrow_api_key: e.currentTarget.value });
+                    setArrowTest("idle");
+                  }}
+                />
+              </label>
+              <div className="settings-field-test">
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  onClick={testArrow}
+                  disabled={arrowTest === "testing" || !settings.arrow_api_key.trim()}
+                >
+                  Test
+                </button>
+                {arrowStatus && (
+                  <span className={arrowStatus.className}>{arrowStatus.text}</span>
                 )}
               </div>
 

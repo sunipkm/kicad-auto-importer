@@ -19,8 +19,8 @@
 //! automatically instead of trusting whichever result an API happened
 //! to return first.
 //!
-//! Lives in the same global config directory as the desktop app's own
-//! settings file (`dirs::config_dir()/kicad-auto-importer/parts_cache`)
+//! Lives in the same global config directory as bom-app's own
+//! settings file (`dirs::config_dir()/kicad-bom-tool/parts_cache`)
 //! using sled — a pure-Rust embedded database — for the same reason:
 //! a vendor's catalog data for a given MPN has nothing to do with any
 //! one project.
@@ -71,7 +71,7 @@ impl PartsCache {
     fn db_path() -> Option<PathBuf> {
         Some(
             dirs::config_dir()?
-                .join("kicad-auto-importer")
+                .join("kicad-bom-tool")
                 .join(CACHE_DIR),
         )
     }

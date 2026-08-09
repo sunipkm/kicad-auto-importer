@@ -23,6 +23,7 @@ interface PartsCredentials {
   mouser_api_key: string;
   digikey_client_id: string;
   digikey_client_secret: string;
+  arrow_api_key: string;
 }
 
 // Mirrors `kicad_parse::bom_pricing::ChosenOffer`.
@@ -335,6 +336,7 @@ export function GenerateBom({ projectDir }: { projectDir: string }) {
             <option value="">None (cheapest)</option>
             <option value="Mouser">Mouser</option>
             <option value="DigiKey">DigiKey</option>
+            <option value="Arrow">Arrow</option>
           </select>
         </label>
         <div className="toolbar-spacer" />

@@ -24,6 +24,8 @@ pub struct VendorCredentials {
     pub digikey_client_id: String,
     #[serde(default)]
     pub digikey_client_secret: String,
+    #[serde(default)]
+    pub arrow_api_key: String,
 }
 
 impl VendorCredentials {
@@ -70,6 +72,7 @@ mod tests {
         assert_eq!(settings.mouser_api_key, "");
         assert_eq!(settings.digikey_client_id, "");
         assert_eq!(settings.digikey_client_secret, "");
+        assert_eq!(settings.arrow_api_key, "");
     }
 
     #[test]
@@ -78,6 +81,7 @@ mod tests {
             mouser_api_key: "some-mouser-key".to_string(),
             digikey_client_id: "some-client-id".to_string(),
             digikey_client_secret: "some-client-secret".to_string(),
+            arrow_api_key: "some-arrow-key".to_string(),
         };
         let text = serde_json::to_string_pretty(&settings).unwrap();
         let loaded: VendorCredentials = serde_json::from_str(&text).unwrap();

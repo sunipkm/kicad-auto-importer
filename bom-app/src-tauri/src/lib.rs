@@ -10,6 +10,7 @@
 //! generation) — logic exclusive to this app, not shared with the egui
 //! `kicad-auto-importer` desktop app.
 #![allow(dead_code)]
+mod arrow;
 mod bom_config;
 mod bom_pricing;
 mod bom_report;
@@ -103,6 +104,15 @@ async fn test_digikey_credentials(client_id: String, client_secret: String) -> R
             client_secret,
         };
         digikey::test_credentials(&creds).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn test_arrow_credentials(api_key: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        arrow::test_credentials(&api_key).map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| e.to_string())?

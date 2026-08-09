@@ -13,6 +13,7 @@
 //! vendor *did* succeed at — see [`combine_results`] for exactly how a
 //! partial success is represented.
 
+use crate::arrow::{self, ArrowCredentials, ArrowError, ArrowPart};
 use crate::digikey::{self, DigikeyCredentials, DigikeyError, DigikeyPart};
 use crate::mouser::{self, MouserCredentials, MouserError, MouserPart};
 use crate::parts_cache::PartsCache;
@@ -30,6 +31,8 @@ pub struct PartsCredentials {
     pub mouser_api_key: String,
     pub digikey_client_id: String,
     pub digikey_client_secret: String,
+    #[serde(default)]
+    pub arrow_api_key: String,
 }
 
 /// Whether a vendor reported a part as orderable right now — deliberately
@@ -168,7 +171,7 @@ pub(crate) fn richer_description<'a>(a: &'a str, b: &'a str) -> &'a str {
 #[derive(Debug, thiserror::Error)]
 pub enum PartsLookupError {
     #[error(
-        "no Mouser API key or DigiKey Client ID/Secret is set — add credentials for at least one vendor first"
+        "no API credentials are set — add credentials for at least one vendor (Mouser, DigiKey, or Arrow) first"
     )]
     MissingCredentials,
     #[error("{0}")]
@@ -179,19 +182,19 @@ pub enum PartsLookupError {
 /// need: queries every vendor with credentials configured, merging the
 /// results — see [`combine_results`].
 ///
-/// The two vendors' HTTP calls run concurrently on plain background
+/// All configured vendors' HTTP calls run concurrently on plain background
 /// threads (`std::thread::scope`, this codebase's established pattern
 /// for background HTTP work — see `crates/app/src/library_import_ui.rs`'s
-/// docs) rather than one after the other: with both configured, this
-/// call's latency used to be roughly Mouser's round trip *plus*
-/// DigiKey's; now it's whichever of the two is slower.
+/// docs) rather than one after the other: latency is roughly the slowest
+/// single vendor's round trip, not the sum of all of them.
 #[allow(dead_code)]
 pub fn lookup_part_info(creds: &PartsCredentials, mpn: &str) -> Result<PartInfo, PartsLookupError> {
     let want_mouser = !creds.mouser_api_key.trim().is_empty();
     let want_digikey = !creds.digikey_client_id.trim().is_empty()
         && !creds.digikey_client_secret.trim().is_empty();
+    let want_arrow = !creds.arrow_api_key.trim().is_empty();
 
-    let (mouser_result, digikey_result) = std::thread::scope(|scope| {
+    let (mouser_result, digikey_result, arrow_result) = std::thread::scope(|scope| {
         let mouser_handle = want_mouser.then(|| {
             scope.spawn(|| {
                 mouser::lookup_part(
@@ -213,16 +216,27 @@ pub fn lookup_part_info(creds: &PartsCredentials, mpn: &str) -> Result<PartInfo,
                 )
             })
         });
+        let arrow_handle = want_arrow.then(|| {
+            scope.spawn(|| {
+                arrow::lookup_part(
+                    &ArrowCredentials {
+                        api_key: creds.arrow_api_key.clone(),
+                    },
+                    mpn,
+                )
+            })
+        });
         (
             mouser_handle.map(|h| h.join().expect("mouser lookup thread panicked")),
             digikey_handle.map(|h| h.join().expect("digikey lookup thread panicked")),
+            arrow_handle.map(|h| h.join().expect("arrow lookup thread panicked")),
         )
     });
 
-    combine_results(mpn, mouser_result, digikey_result)
+    combine_results(mpn, mouser_result, digikey_result, arrow_result)
 }
 
-/// Merges up to two independent vendor lookups into one [`PartInfo`].
+/// Merges up to three independent vendor lookups into one [`PartInfo`].
 /// `None` means that vendor wasn't configured at all (skipped
 /// silently, not a failure); `Some(Err(_))` means it was configured but
 /// the lookup itself failed (recorded as a warning, not fatal on its
@@ -237,8 +251,9 @@ fn combine_results(
     mpn: &str,
     mouser: Option<Result<MouserPart, MouserError>>,
     digikey: Option<Result<DigikeyPart, DigikeyError>>,
+    arrow: Option<Result<ArrowPart, ArrowError>>,
 ) -> Result<PartInfo, PartsLookupError> {
-    if mouser.is_none() && digikey.is_none() {
+    if mouser.is_none() && digikey.is_none() && arrow.is_none() {
         return Err(PartsLookupError::MissingCredentials);
     }
 
@@ -277,6 +292,22 @@ fn combine_results(
                 offers.push(digikey_part_to_offer(part));
             }
             Err(exc) => warnings.push(format!("DigiKey: {exc}")),
+        }
+    }
+
+    if let Some(result) = arrow {
+        match result {
+            Ok(part) => {
+                if manufacturer.is_empty() {
+                    manufacturer = part.manufacturer.clone();
+                }
+                if !part.mpn.is_empty() {
+                    resolved_mpn = part.mpn.clone();
+                }
+                description = richer_description(&description, &part.description).to_string();
+                offers.push(arrow_part_to_offer(part));
+            }
+            Err(exc) => warnings.push(format!("Arrow: {exc}")),
         }
     }
 
@@ -325,6 +356,22 @@ fn digikey_part_to_offer(part: DigikeyPart) -> VendorOffer {
     }
 }
 
+fn arrow_part_to_offer(part: ArrowPart) -> VendorOffer {
+    VendorOffer {
+        seller: "Arrow".to_string(),
+        url: part.url,
+        sku: part.sku,
+        price_summary: part.price_summary,
+        stock_status: part.stock_status,
+        stock_summary: part.stock_summary,
+        stock_quantity: part.stock_quantity,
+        lifecycle_summary: part.lifecycle_summary,
+        lifecycle_concern: part.lifecycle_concern,
+        suggested_replacement: part.suggested_replacement,
+        price_breaks: part.price_breaks,
+    }
+}
+
 /// One vendor's specific candidate match for a queried MPN — the raw
 /// material a "which of these is actually my part" picker chooses from.
 /// Distinct from [`VendorOffer`]: a candidate carries the vendor's own
@@ -356,6 +403,15 @@ fn digikey_part_to_candidate(part: DigikeyPart) -> VendorCandidate {
         mpn: part.mpn.clone(),
         description: part.description.clone(),
         offer: digikey_part_to_offer(part),
+    }
+}
+
+fn arrow_part_to_candidate(part: ArrowPart) -> VendorCandidate {
+    VendorCandidate {
+        manufacturer: part.manufacturer.clone(),
+        mpn: part.mpn.clone(),
+        description: part.description.clone(),
+        offer: arrow_part_to_offer(part),
     }
 }
 
@@ -395,8 +451,9 @@ pub fn lookup_part_candidates(
     let want_mouser = !creds.mouser_api_key.trim().is_empty();
     let want_digikey = !creds.digikey_client_id.trim().is_empty()
         && !creds.digikey_client_secret.trim().is_empty();
+    let want_arrow = !creds.arrow_api_key.trim().is_empty();
 
-    let (mouser_result, digikey_result) = std::thread::scope(|scope| {
+    let (mouser_result, digikey_result, arrow_result) = std::thread::scope(|scope| {
         let mouser_handle = want_mouser.then(|| {
             scope.spawn(|| mouser::search_parts(&creds.mouser_api_key, mpn, MAX_CANDIDATE_RESULTS))
         });
@@ -412,21 +469,26 @@ pub fn lookup_part_candidates(
                 )
             })
         });
+        let arrow_handle = want_arrow.then(|| {
+            scope.spawn(|| arrow::search_parts(&creds.arrow_api_key, mpn, MAX_CANDIDATE_RESULTS))
+        });
         (
             mouser_handle.map(|h| h.join().expect("mouser search thread panicked")),
             digikey_handle.map(|h| h.join().expect("digikey search thread panicked")),
+            arrow_handle.map(|h| h.join().expect("arrow search thread panicked")),
         )
     });
 
-    combine_candidate_results(mpn, mouser_result, digikey_result)
+    combine_candidate_results(mpn, mouser_result, digikey_result, arrow_result)
 }
 
 fn combine_candidate_results(
     mpn: &str,
     mouser: Option<Result<Vec<MouserPart>, MouserError>>,
     digikey: Option<Result<Vec<DigikeyPart>, DigikeyError>>,
+    arrow: Option<Result<Vec<ArrowPart>, ArrowError>>,
 ) -> Result<CandidateSet, PartsLookupError> {
-    if mouser.is_none() && digikey.is_none() {
+    if mouser.is_none() && digikey.is_none() && arrow.is_none() {
         return Err(PartsLookupError::MissingCredentials);
     }
 
@@ -443,6 +505,12 @@ fn combine_candidate_results(
         match result {
             Ok(parts) => candidates.extend(parts.into_iter().map(digikey_part_to_candidate)),
             Err(exc) => warnings.push(format!("DigiKey: {exc}")),
+        }
+    }
+    if let Some(result) = arrow {
+        match result {
+            Ok(parts) => candidates.extend(parts.into_iter().map(arrow_part_to_candidate)),
+            Err(exc) => warnings.push(format!("Arrow: {exc}")),
         }
     }
 
@@ -1013,6 +1081,7 @@ mod tests {
             "LM358P",
             Some(Ok(mouser_part("a"))),
             Some(Ok(digikey_part())),
+            None,
         )
         .unwrap();
         assert_eq!(info.manufacturer, "Texas Instruments");
@@ -1028,6 +1097,7 @@ mod tests {
             "LM358P",
             Some(Ok(mouser_part("a"))),
             Some(Err(DigikeyError::NotFound("LM358P".to_string()))),
+            None,
         )
         .unwrap();
         assert_eq!(info.offers.len(), 1);
@@ -1038,7 +1108,7 @@ mod tests {
 
     #[test]
     fn neither_vendor_configured_is_missing_credentials() {
-        let err = combine_results("LM358P", None, None).unwrap_err();
+        let err = combine_results("LM358P", None, None, None).unwrap_err();
         assert!(matches!(err, PartsLookupError::MissingCredentials));
     }
 
@@ -1048,6 +1118,7 @@ mod tests {
             "LM358P",
             Some(Err(MouserError::NotFound("LM358P".to_string()))),
             Some(Err(DigikeyError::NotFound("LM358P".to_string()))),
+            None,
         )
         .unwrap_err();
         assert!(
@@ -1058,7 +1129,7 @@ mod tests {
     #[test]
     fn only_one_vendor_configured_and_it_fails_is_all_vendors_failed() {
         let err =
-            combine_results("LM358P", Some(Err(MouserError::MissingApiKey)), None).unwrap_err();
+            combine_results("LM358P", Some(Err(MouserError::MissingApiKey)), None, None).unwrap_err();
         assert!(matches!(err, PartsLookupError::AllVendorsFailed(_)));
     }
 
@@ -1066,7 +1137,7 @@ mod tests {
 
     #[test]
     fn candidates_neither_vendor_configured_is_missing_credentials() {
-        let err = combine_candidate_results("LM358P", None, None).unwrap_err();
+        let err = combine_candidate_results("LM358P", None, None, None).unwrap_err();
         assert!(matches!(err, PartsLookupError::MissingCredentials));
     }
 
@@ -1076,6 +1147,7 @@ mod tests {
             "LM358P",
             Some(Err(MouserError::NotFound("LM358P".to_string()))),
             Some(Err(DigikeyError::NotFound("LM358P".to_string()))),
+            None,
         )
         .unwrap_err();
         assert!(
@@ -1091,6 +1163,7 @@ mod tests {
             "LM358P",
             Some(Ok(vec![mouser_part("a"), second_mouser])),
             Some(Ok(vec![digikey_part()])),
+            None,
         )
         .unwrap();
         assert_eq!(set.candidates.len(), 3);
@@ -1117,6 +1190,7 @@ mod tests {
             "LM358P",
             Some(Ok(vec![mouser_part("a")])),
             Some(Err(DigikeyError::NotFound("LM358P".to_string()))),
+            None,
         )
         .unwrap();
         assert_eq!(set.candidates.len(), 1);
@@ -1156,7 +1230,7 @@ mod tests {
     fn falls_back_to_the_queried_mpn_when_a_vendor_returns_none() {
         let mut part = mouser_part("a");
         part.mpn = String::new();
-        let info = combine_results("QUERY-MPN", Some(Ok(part)), None).unwrap();
+        let info = combine_results("QUERY-MPN", Some(Ok(part)), None, None).unwrap();
         assert_eq!(info.mpn, "QUERY-MPN");
     }
 
@@ -1171,6 +1245,7 @@ mod tests {
             "LM358P",
             Some(Ok(mouser_part("a"))), // in stock
             Some(Ok(out_of_stock)),
+            None,
         )
         .unwrap();
         assert!(info.in_stock());
@@ -1181,7 +1256,7 @@ mod tests {
         let mut mouser = mouser_part("a");
         mouser.stock_status = StockStatus::OutOfStock;
         mouser.stock_summary = "0 In Stock".to_string();
-        let info = combine_results("LM358P", Some(Ok(mouser)), None).unwrap();
+        let info = combine_results("LM358P", Some(Ok(mouser)), None, None).unwrap();
         assert!(!info.in_stock());
     }
 
@@ -1191,6 +1266,7 @@ mod tests {
             "LM358P",
             Some(Ok(mouser_part("a"))),
             Some(Ok(digikey_part())),
+            None,
         )
         .unwrap();
         let mut node = SexpNode::parse(r#"(symbol "U1" (property "Reference" "U"))"#).unwrap();
@@ -1226,7 +1302,7 @@ mod tests {
     fn apply_part_info_writes_a_suggested_replacement_when_given() {
         let mut mouser = mouser_part("a");
         mouser.suggested_replacement = "LM358PWR".to_string();
-        let info = combine_results("LM358P", Some(Ok(mouser)), None).unwrap();
+        let info = combine_results("LM358P", Some(Ok(mouser)), None, None).unwrap();
         let mut node = SexpNode::parse(r#"(symbol "U1" (property "Reference" "U"))"#).unwrap();
         apply_part_info(&mut node, &info);
 
@@ -1243,7 +1319,7 @@ mod tests {
     fn read_cached_part_info_round_trips_apply_part_info() {
         let mut mouser = mouser_part("a");
         mouser.price_breaks = vec![(1.0, 0.55), (10.0, 0.41), (100.0, 0.32)];
-        let info = combine_results("LM358P", Some(Ok(mouser)), Some(Ok(digikey_part()))).unwrap();
+        let info = combine_results("LM358P", Some(Ok(mouser)), Some(Ok(digikey_part())), None).unwrap();
         let mut node = SexpNode::parse(r#"(symbol "U1" (property "Reference" "U"))"#).unwrap();
         apply_part_info(&mut node, &info);
 
@@ -1298,13 +1374,13 @@ mod tests {
         let mut mouser = mouser_part("a");
         mouser.lifecycle_summary = "Obsolete".to_string();
         mouser.lifecycle_concern = true;
-        let info = combine_results("LM358P", Some(Ok(mouser)), Some(Ok(digikey_part()))).unwrap();
+        let info = combine_results("LM358P", Some(Ok(mouser)), Some(Ok(digikey_part())), None).unwrap();
         assert!(info.lifecycle_concern());
     }
 
     #[test]
     fn lifecycle_concern_false_when_no_offer_is_flagged() {
-        let info = combine_results("LM358P", Some(Ok(mouser_part("a"))), None).unwrap();
+        let info = combine_results("LM358P", Some(Ok(mouser_part("a"))), None, None).unwrap();
         assert!(!info.lifecycle_concern());
     }
 
@@ -1369,6 +1445,7 @@ mod tests {
             "LM358P",
             Some(Ok(mouser_part("a"))),
             Some(Ok(digikey_part())),
+            None,
         )
         .unwrap();
         assert_eq!(
@@ -1381,13 +1458,13 @@ mod tests {
     fn combine_results_description_is_empty_when_neither_vendor_has_one() {
         let mut mouser = mouser_part("a");
         mouser.description = String::new();
-        let info = combine_results("LM358P", Some(Ok(mouser)), None).unwrap();
+        let info = combine_results("LM358P", Some(Ok(mouser)), None, None).unwrap();
         assert_eq!(info.description, "");
     }
 
     #[test]
     fn apply_part_info_writes_a_vendor_description_property() {
-        let info = combine_results("LM358P", Some(Ok(mouser_part("a"))), None).unwrap();
+        let info = combine_results("LM358P", Some(Ok(mouser_part("a"))), None, None).unwrap();
         let mut node = SexpNode::parse(r#"(symbol "U1" (property "Reference" "U"))"#).unwrap();
         apply_part_info(&mut node, &info);
 
@@ -1402,7 +1479,7 @@ mod tests {
     fn apply_part_info_omits_vendor_description_when_empty() {
         let mut mouser = mouser_part("a");
         mouser.description = String::new();
-        let info = combine_results("LM358P", Some(Ok(mouser)), None).unwrap();
+        let info = combine_results("LM358P", Some(Ok(mouser)), None, None).unwrap();
         let mut node = SexpNode::parse(r#"(symbol "U1" (property "Reference" "U"))"#).unwrap();
         apply_part_info(&mut node, &info);
 
