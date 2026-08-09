@@ -543,6 +543,7 @@ fn generate_bom(
     pdf_path: Option<String>,
     xlsx_path: Option<String>,
     credentials: PartsCredentials,
+    preferred_vendor: Option<String>,
 ) {
     std::thread::spawn(move || {
         let project_dir = std::path::PathBuf::from(&project_dir);
@@ -566,6 +567,7 @@ fn generate_bom(
             pdf_path: pdf_path.map(std::path::PathBuf::from),
             xlsx_path: xlsx_path.map(std::path::PathBuf::from),
             credentials,
+            preferred_vendor,
         };
 
         // Capture the event emitter in a closure; BomEvent::Done fires before

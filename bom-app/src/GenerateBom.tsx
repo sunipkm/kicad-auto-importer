@@ -83,6 +83,7 @@ export function GenerateBom({ projectDir }: { projectDir: string }) {
   const [boardQty, setBoardQty] = useState(1);
   const [passiveMarginPercent, setPassiveMarginPercent] = useState(20);
   const [forceRecheck, setForceRecheck] = useState(false);
+  const [preferredVendor, setPreferredVendor] = useState<string | null>(null);
   const [logLines, setLogLines] = useState<string[]>([]);
   const [status, setStatus] = useState<string | null>(null);
   const [inProgress, setInProgress] = useState(false);
@@ -215,6 +216,7 @@ export function GenerateBom({ projectDir }: { projectDir: string }) {
       pdfPath,
       xlsxPath,
       credentials,
+      preferredVendor,
     });
   }
 
@@ -253,6 +255,18 @@ export function GenerateBom({ projectDir }: { projectDir: string }) {
           %
         </label>
         <span className="field-hint">(resistors/capacitors/inductors only — min. +5 pcs)</span>
+        <label>
+          Preferred vendor:
+          <select
+            value={preferredVendor ?? ""}
+            onChange={(e) => setPreferredVendor(e.currentTarget.value || null)}
+            disabled={inProgress}
+          >
+            <option value="">None (cheapest)</option>
+            <option value="Mouser">Mouser</option>
+            <option value="DigiKey">DigiKey</option>
+          </select>
+        </label>
         <div className="toolbar-spacer" />
         <label>
           <input

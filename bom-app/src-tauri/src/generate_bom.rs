@@ -47,6 +47,7 @@ pub struct BomBatchRequest {
     pub pdf_path: Option<PathBuf>,
     pub xlsx_path: Option<PathBuf>,
     pub credentials: PartsCredentials,
+    pub preferred_vendor: Option<String>,
 }
 
 /// At most one `parts_lookup::lookup_part_info` call per *group*, not
@@ -66,6 +67,7 @@ pub fn run_bom_batch(
         pdf_path,
         xlsx_path,
         credentials,
+        preferred_vendor,
     } = request;
 
     // Every schematic file any group's instances live in, opened once
@@ -189,7 +191,7 @@ pub fn run_bom_batch(
                         group.display_name
                     )));
                 }
-                match bom_pricing::choose_cheapest_offer(&info, needed_qty) {
+                match bom_pricing::choose_offer_with_preference(&info, needed_qty, preferred_vendor.as_deref()) {
                     Some(chosen) => {
                         grand_total += chosen.total_price;
                         let shortfall = chosen.stock_quantity < u64::from(chosen.purchase_qty);

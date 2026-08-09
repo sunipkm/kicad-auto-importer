@@ -181,7 +181,23 @@ pub struct PricedRow {
 /// that doesn't, since the cheaper "price" is fictional if you can't
 /// actually buy that many. Among offers that tie on "can fulfill it,"
 /// price still decides.
+///
+/// If `preferred_vendor` is set, attempts to use that vendor if it has
+/// a priced offer, otherwise falls back to the cheapest available.
 pub fn choose_cheapest_offer(info: &PartInfo, needed: u32) -> Option<ChosenOffer> {
+    choose_offer_with_preference(info, needed, None)
+}
+
+/// Like `choose_cheapest_offer`, but allows specifying a preferred vendor.
+/// If the preferred vendor has a priced offer with sufficient stock, it's
+/// selected. If it lacks stock, falls back to the cheapest vendor that
+/// can fulfill it. If no vendor can fulfill it, picks the preferred vendor
+/// if available, otherwise the cheapest.
+pub fn choose_offer_with_preference(
+    info: &PartInfo,
+    needed: u32,
+    preferred_vendor: Option<&str>,
+) -> Option<ChosenOffer> {
     let candidates: Vec<(
         &crate::parts_lookup::VendorOffer,
         crate::parts_lookup::PurchaseOption,
@@ -193,24 +209,71 @@ pub fn choose_cheapest_offer(info: &PartInfo, needed: u32) -> Option<ChosenOffer
         })
         .collect();
 
+    if candidates.is_empty() {
+        return None;
+    }
+
+    // Partition into well-stocked and understocked
     let sufficiently_stocked: Vec<_> = candidates
         .iter()
         .copied()
         .filter(|(offer, option)| offer.stock_quantity >= u64::from(option.quantity))
         .collect();
 
+    // If a preferred vendor was specified, check if it's well-stocked
+    if let Some(pref_vendor) = preferred_vendor {
+        if let Some(&(offer, option)) = sufficiently_stocked
+            .iter()
+            .find(|(o, _)| o.seller == pref_vendor)
+        {
+            // Preferred vendor is well-stocked; use it
+            return Some(build_chosen_offer(info, offer, option));
+        }
+
+        // Preferred vendor is not well-stocked; try other well-stocked vendors
+        if !sufficiently_stocked.is_empty() {
+            let (offer, option) = sufficiently_stocked
+                .iter()
+                .copied()
+                .min_by(|(_, a), (_, b)| {
+                    a.total_price
+                        .partial_cmp(&b.total_price)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })?;
+            return Some(build_chosen_offer(info, offer, option));
+        }
+
+        // No well-stocked vendors; try the preferred vendor even if understocked
+        if let Some(&(offer, option)) = candidates
+            .iter()
+            .find(|(o, _)| o.seller == pref_vendor)
+        {
+            return Some(build_chosen_offer(info, offer, option));
+        }
+    }
+
+    // No preferred vendor, or it wasn't available; use cheapest from well-stocked, or all candidates
     let pool = if sufficiently_stocked.is_empty() {
         &candidates
     } else {
         &sufficiently_stocked
     };
+
     let (offer, option) = pool.iter().copied().min_by(|(_, a), (_, b)| {
         a.total_price
             .partial_cmp(&b.total_price)
             .unwrap_or(std::cmp::Ordering::Equal)
     })?;
 
-    Some(ChosenOffer {
+    Some(build_chosen_offer(info, offer, option))
+}
+
+fn build_chosen_offer(
+    info: &PartInfo,
+    offer: &crate::parts_lookup::VendorOffer,
+    option: crate::parts_lookup::PurchaseOption,
+) -> ChosenOffer {
+    ChosenOffer {
         seller: offer.seller.clone(),
         manufacturer: info.manufacturer.clone(),
         mpn: info.mpn.clone(),
@@ -221,7 +284,7 @@ pub fn choose_cheapest_offer(info: &PartInfo, needed: u32) -> Option<ChosenOffer
         in_stock: offer.stock_status == StockStatus::InStock,
         stock_quantity: offer.stock_quantity,
         lifecycle_concern: offer.lifecycle_concern,
-    })
+    }
 }
 
 #[cfg(test)]
@@ -533,5 +596,56 @@ mod tests {
         let chosen = choose_cheapest_offer(&info, 10).unwrap();
         assert_eq!(chosen.seller, "DigiKey");
         assert_eq!(chosen.stock_quantity, 1);
+    }
+
+    // ── vendor preference ────────────────────────────────────────────
+
+    #[test]
+    fn prefers_specified_vendor_when_well_stocked() {
+        let info = info_with_offers(vec![
+            offer_with_stock("Mouser", vec![(1.0, 0.10)], 100),
+            offer_with_stock("DigiKey", vec![(1.0, 0.15)], 100),
+        ]);
+        let chosen = choose_offer_with_preference(&info, 10, Some("Mouser")).unwrap();
+        assert_eq!(chosen.seller, "Mouser");
+    }
+
+    #[test]
+    fn falls_back_when_preferred_vendor_lacks_stock() {
+        let info = info_with_offers(vec![
+            offer_with_stock("Mouser", vec![(1.0, 0.10)], 3),
+            offer_with_stock("DigiKey", vec![(1.0, 0.15)], 100),
+        ]);
+        let chosen = choose_offer_with_preference(&info, 10, Some("Mouser")).unwrap();
+        assert_eq!(chosen.seller, "DigiKey");
+    }
+
+    #[test]
+    fn uses_preferred_vendor_even_without_stock_as_fallback() {
+        let info = info_with_offers(vec![
+            offer_with_stock("Mouser", vec![(1.0, 0.10)], 3),
+            offer_with_stock("DigiKey", vec![(1.0, 0.15)], 2),
+        ]);
+        let chosen = choose_offer_with_preference(&info, 10, Some("Mouser")).unwrap();
+        assert_eq!(chosen.seller, "Mouser");
+    }
+
+    #[test]
+    fn ignores_preference_when_vendor_unavailable() {
+        let info = info_with_offers(vec![
+            offer_with_stock("DigiKey", vec![(1.0, 0.15)], 100),
+        ]);
+        let chosen = choose_offer_with_preference(&info, 10, Some("Mouser")).unwrap();
+        assert_eq!(chosen.seller, "DigiKey");
+    }
+
+    #[test]
+    fn none_preference_uses_cheapest_like_default() {
+        let info = info_with_offers(vec![
+            offer_with_stock("Mouser", vec![(1.0, 0.20)], 100),
+            offer_with_stock("DigiKey", vec![(1.0, 0.15)], 100),
+        ]);
+        let chosen = choose_offer_with_preference(&info, 10, None).unwrap();
+        assert_eq!(chosen.seller, "DigiKey");
     }
 }
