@@ -913,6 +913,8 @@ pub fn run() {
             export_interactive_bom_html,
             export_interactive_bom_xlsx,
             export_excel_bom,
+            load_bom_config,
+            save_bom_config,
             load_xlsx_columns_config,
             save_xlsx_columns_config,
             load_column_profiles,

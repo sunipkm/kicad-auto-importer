@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { BomConfigPanel } from "./BomConfigPanel";
 import { SymbolColumnsPanel } from "./SymbolColumnsPanel";
-import { XlsxColumnsPanel } from "./XlsxColumnsPanel";
 
 // Mirrors `vendor_credentials::VendorCredentials` — bom-app's own
 // settings.json, no longer shared with the egui desktop app — via the
@@ -240,11 +239,6 @@ export function SettingsPanel() {
               <details className="settings-section">
                 <summary className="settings-section-title">Symbol Table Columns…</summary>
                 <SymbolColumnsPanel />
-              </details>
-
-              <details className="settings-section">
-                <summary className="settings-section-title">Excel Export Columns…</summary>
-                <XlsxColumnsPanel />
               </details>
             </>
           )}
