@@ -156,6 +156,9 @@ pub struct ChosenOffer {
     /// enough of it to cover this line" (see [`choose_cheapest_offer`]).
     pub stock_quantity: u64,
     pub lifecycle_concern: bool,
+    /// Price breaks for this offer: (min_qty, unit_price) pairs.
+    /// Used for Excel export to create dynamic pricing formulas.
+    pub price_breaks: Vec<(f64, f64)>,
 }
 
 /// One priced BOM line: a [`PartGroup`] plus what looking it up found
@@ -286,6 +289,7 @@ fn build_chosen_offer(
         in_stock: offer.stock_status == StockStatus::InStock,
         stock_quantity: offer.stock_quantity,
         lifecycle_concern: offer.lifecycle_concern,
+        price_breaks: offer.price_breaks.clone(),
     }
 }
 

@@ -830,6 +830,63 @@ fn update_custom_field(
     }
 }
 
+#[tauri::command]
+fn export_excel_bom(app: AppHandle, xlsx_path: String) -> Result<(), String> {
+    let (priced_rows, board_qty) = {
+        let state = app
+            .try_state::<InteractiveBomState>()
+            .ok_or("Interactive BOM state not initialised — generate BOM first")?;
+        let guard = state.0.lock().unwrap();
+        let s = guard
+            .as_ref()
+            .ok_or("No interactive BOM has been generated yet")?;
+        (s.priced_rows.clone(), s.board_qty)
+    };
+
+    let path = std::path::PathBuf::from(&xlsx_path);
+    let xlsx_cols = xlsx_columns::XlsxColumnsConfig::load().visible_columns();
+    bom_report::generate_priced_bom_xlsx(&priced_rows, board_qty, &xlsx_cols, &path)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn load_column_profiles() -> Result<serde_json::Value, String> {
+    let profiles_dir = xlsx_columns::profiles_dir();
+    if !profiles_dir.exists() {
+        return Ok(serde_json::json!({ "profiles": [] }));
+    }
+
+    let mut profiles = Vec::new();
+    for entry in std::fs::read_dir(&profiles_dir).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) == Some("json") {
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                if let Ok(profile) = serde_json::from_str::<serde_json::Value>(&content) {
+                    profiles.push(profile);
+                }
+            }
+        }
+    }
+    Ok(serde_json::json!({ "profiles": profiles }))
+}
+
+#[tauri::command]
+fn save_column_profiles(profiles: Vec<serde_json::Value>) -> Result<(), String> {
+    let profiles_dir = xlsx_columns::profiles_dir();
+    std::fs::create_dir_all(&profiles_dir).map_err(|e| e.to_string())?;
+
+    for profile in profiles {
+        if let Some(name) = profile.get("name").and_then(|v| v.as_str()) {
+            let path = profiles_dir.join(format!("{}.json", name));
+            let content = serde_json::to_string_pretty(&profile).map_err(|e| e.to_string())?;
+            std::fs::write(&path, content).map_err(|e| e.to_string())?;
+        }
+    }
+
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     #[cfg(target_os = "linux")]
@@ -855,8 +912,11 @@ pub fn run() {
             open_interactive_bom,
             export_interactive_bom_html,
             export_interactive_bom_xlsx,
+            export_excel_bom,
             load_xlsx_columns_config,
             save_xlsx_columns_config,
+            load_column_profiles,
+            save_column_profiles,
             load_symbol_columns_config,
             save_symbol_columns_config,
             load_custom_fields_config,

@@ -623,6 +623,11 @@ details.log-panel pre {
   overflow: auto;
 }
 
+.export-modal {
+  width: min(500px, 90vw);
+  max-height: 85vh;
+}
+
 /* ── Vendor dropdown ───────────────────────────────────────────── */
 
 .vendor-dropdown {
@@ -772,6 +777,30 @@ details.log-panel pre {
   display: flex;
   align-items: center;
   gap: 0.4rem;
+  cursor: move;
+  padding: 0.2rem;
+  border-radius: 2px;
+  transition: background-color 0.15s, border 0.15s;
+  border: 2px solid transparent;
+  user-select: none;
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
+}
+
+.xlsx-col-row:hover {
+  background-color: var(--surface-alt);
+}
+
+.xlsx-col-row.dragging {
+  opacity: 0.5;
+  background-color: var(--surface-alt);
+}
+
+.xlsx-col-row.drop-target {
+  border-top: 2px solid var(--accent);
+  border-bottom: 2px solid var(--accent);
+  background-color: rgba(37, 99, 235, 0.05);
 }
 
 .xlsx-col-label {

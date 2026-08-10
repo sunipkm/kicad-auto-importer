@@ -12,6 +12,7 @@ use crate::bom_report::XlsxColumn;
 use crate::custom_fields;
 
 const CONFIG_FILENAME: &str = "xlsx_columns.json";
+const PROFILES_DIRNAME: &str = "xlsx_column_profiles";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "value")]
@@ -145,4 +146,10 @@ impl XlsxColumnEntry {
     pub fn is_mandatory(&self) -> bool {
         matches!(self.column, XlsxColumnKey::Standard(col) if col.is_mandatory())
     }
+}
+
+pub fn profiles_dir() -> PathBuf {
+    dirs::config_dir()
+        .map(|d| d.join("bom-app").join(PROFILES_DIRNAME))
+        .unwrap_or_else(|| PathBuf::from(PROFILES_DIRNAME))
 }

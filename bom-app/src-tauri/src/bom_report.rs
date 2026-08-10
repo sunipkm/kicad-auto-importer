@@ -74,7 +74,7 @@ impl XlsxColumn {
             Self::Part => "Part",
             Self::References => "References",
             Self::NeededQty => "Need",
-            Self::PurchaseQty => "Buy",
+            Self::PurchaseQty => "Order Qty",
             Self::Vendor => "Vendor",
             Self::UnitPrice => "Unit Price",
             Self::TotalPrice => "Ext Price",
@@ -899,6 +899,28 @@ pub fn generate_priced_bom(
 /// One row per [`bom_pricing::PricedRow`] plus a trailing `Total` row; a
 /// failed lookup still gets a row (with blank price cells and a
 /// `LOOKUP FAILED` note) rather than silently vanishing from the BOM.
+/// Convert a 0-based column index to an Excel column letter (0 -> A, 25 -> Z, 26 -> AA, etc.)
+fn column_letter(col: usize) -> String {
+    let mut result = String::new();
+    let mut n = col + 1;
+    while n > 0 {
+        n -= 1;
+        result.insert(0, (b'A' + (n % 26) as u8) as char);
+        n /= 26;
+    }
+    result
+}
+
+/// Generate an XLSX file with dynamic pricing formulas.
+///
+/// The exported file includes:
+/// - **Order Qty column**: Editable by the user (initially set to recommended purchase quantity)
+/// - **Unit Price**: Formula-based, looks up price from PricingRef sheet based on vendor, SKU, and order quantity
+/// - **Total Price**: Formula (Order Qty × Unit Price) that auto-updates when order qty changes
+/// - **PricingRef sheet**: Hidden sheet containing all price bracket data for lookup formulas
+///
+/// When users edit the "Order Qty" column, both Unit Price and Total Price automatically recalculate
+/// based on the vendor's price brackets.
 pub fn generate_priced_bom_xlsx(
     rows: &[bom_pricing::PricedRow],
     board_qty: u32,
@@ -930,6 +952,36 @@ pub fn generate_priced_bom_xlsx(
         sheet.write_with_format(0, col as u16, label, &header_format)?;
     }
 
+    // Find column indices for dynamic pricing formulas
+    let vendor_col = columns.iter().position(|c| {
+        matches!(
+            c,
+            crate::xlsx_columns::XlsxColumnKey::Standard(XlsxColumn::Vendor)
+        )
+    });
+    let sku_col = columns
+        .iter()
+        .position(|c| {
+            matches!(
+                c,
+                crate::xlsx_columns::XlsxColumnKey::Standard(XlsxColumn::Vendor)
+            )
+        })
+        .or_else(|| {
+            columns.iter().position(|c| {
+                matches!(
+                    c,
+                    crate::xlsx_columns::XlsxColumnKey::Standard(XlsxColumn::Part)
+                )
+            })
+        });
+    let purchase_qty_col = columns.iter().position(|c| {
+        matches!(
+            c,
+            crate::xlsx_columns::XlsxColumnKey::Standard(XlsxColumn::PurchaseQty)
+        )
+    });
+
     let mut grand_total = 0.0f64;
     let mut row_idx: u32 = 1;
     for row in rows {
@@ -948,8 +1000,8 @@ pub fn generate_priced_bom_xlsx(
             grand_total += ch.total_price;
         }
 
-        for (col, xcol) in columns.iter().enumerate() {
-            let c = col as u16;
+        for (col_idx, xcol) in columns.iter().enumerate() {
+            let c = col_idx as u16;
             match xcol {
                 crate::xlsx_columns::XlsxColumnKey::Standard(col_type) => match col_type {
                     XlsxColumn::Part => {
@@ -965,6 +1017,7 @@ pub fn generate_priced_bom_xlsx(
                     }
                     XlsxColumn::PurchaseQty => {
                         if let Ok(ch) = &row.outcome {
+                            // Write as editable "Order Qty" — user can change this
                             sheet.write_with_format(row_idx, c, ch.purchase_qty, text_fmt)?;
                         }
                     }
@@ -975,12 +1028,47 @@ pub fn generate_priced_bom_xlsx(
                     }
                     XlsxColumn::UnitPrice => {
                         if let Ok(ch) = &row.outcome {
-                            sheet.write_with_format(row_idx, c, ch.unit_price, money_fmt)?;
+                            // Write formula that looks up price based on order quantity
+                            if let (Some(vendor_c), Some(sku_c), Some(qty_c)) =
+                                (vendor_col, sku_col, purchase_qty_col)
+                            {
+                                let vendor_cell =
+                                    format!("{}{}", column_letter(vendor_c), row_idx + 1);
+                                let sku_cell = format!("{}{}", column_letter(sku_c), row_idx + 1);
+                                let qty_cell = format!("{}{}", column_letter(qty_c), row_idx + 1);
+                                // Formula: find price where Vendor matches, SKU matches, and Qty is <= OrderQty
+                                let formula = format!(
+                                    "IFERROR(INDEX(PricingRef!$E$2:$E$10000,MAX(IF((PricingRef!$A$2:$A$10000={})*(PricingRef!$B$2:$B$10000={})*(PricingRef!$D$2:$D$10000<={}),ROW(PricingRef!$E$2:$E$10000)-1))),{})",
+                                    vendor_cell, sku_cell, qty_cell, ch.unit_price
+                                );
+                                sheet
+                                    .write_formula_with_format(row_idx, c, &*formula, money_fmt)?;
+                            } else {
+                                sheet.write_with_format(row_idx, c, ch.unit_price, money_fmt)?;
+                            }
                         }
                     }
                     XlsxColumn::TotalPrice => {
-                        if let Ok(ch) = &row.outcome {
-                            sheet.write_with_format(row_idx, c, ch.total_price, money_fmt)?;
+                        if let Ok(_ch) = &row.outcome {
+                            // Write formula that multiplies Order Qty × Unit Price
+                            if let Some(qty_c) = purchase_qty_col {
+                                let qty_cell = format!("{}{}", column_letter(qty_c), row_idx + 1);
+                                let price_cell = format!(
+                                    "{}{}",
+                                    column_letter(col_idx.saturating_sub(1)),
+                                    row_idx + 1
+                                );
+                                let formula = format!("{}*{}", qty_cell, price_cell);
+                                sheet
+                                    .write_formula_with_format(row_idx, c, &*formula, money_fmt)?;
+                            } else {
+                                // Fallback if columns not found
+                                let qty_cell = format!("D{}", row_idx + 1);
+                                let price_cell = format!("E{}", row_idx + 1);
+                                let formula = format!("{}*{}", qty_cell, price_cell);
+                                sheet
+                                    .write_formula_with_format(row_idx, c, &*formula, money_fmt)?;
+                            }
                         }
                     }
                     XlsxColumn::InStock => {
@@ -1041,6 +1129,34 @@ pub fn generate_priced_bom_xlsx(
     sheet.write_with_format(row_idx, 1, board_qty, &normal_format)?;
 
     sheet.autofit();
+
+    // Create hidden reference sheet for pricing
+    let pricing_sheet = workbook.add_worksheet();
+    pricing_sheet.set_name("PricingRef")?;
+    pricing_sheet.set_hidden(true);
+
+    // Write pricing reference data: Vendor, SKU, MPN, Qty, Price
+    let pricing_header_fmt = XlsxFormat::new().set_bold();
+    pricing_sheet.write_with_format(0, 0, "Vendor", &pricing_header_fmt)?;
+    pricing_sheet.write_with_format(0, 1, "SKU", &pricing_header_fmt)?;
+    pricing_sheet.write_with_format(0, 2, "MPN", &pricing_header_fmt)?;
+    pricing_sheet.write_with_format(0, 3, "Qty", &pricing_header_fmt)?;
+    pricing_sheet.write_with_format(0, 4, "Price", &pricing_header_fmt)?;
+
+    let mut pricing_row = 1;
+    for row in rows {
+        if let Ok(offer) = &row.outcome {
+            for (qty, price) in &offer.price_breaks {
+                pricing_sheet.write_with_format(pricing_row, 0, &offer.seller, &normal_format)?;
+                pricing_sheet.write_with_format(pricing_row, 1, &offer.sku, &normal_format)?;
+                pricing_sheet.write_with_format(pricing_row, 2, &offer.mpn, &normal_format)?;
+                pricing_sheet.write_with_format(pricing_row, 3, *qty as u32, &normal_format)?;
+                pricing_sheet.write_with_format(pricing_row, 4, *price, &money_format)?;
+                pricing_row += 1;
+            }
+        }
+    }
+    pricing_sheet.set_hidden(true);
 
     if let Some(parent) = out_path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -1344,6 +1460,7 @@ mod tests {
                 in_stock: true,
                 stock_quantity: 10_000,
                 lifecycle_concern: false,
+                price_breaks: vec![(1.0, 0.10), (10.0, 0.09), (100.0, 0.08)],
             }),
         }
     }

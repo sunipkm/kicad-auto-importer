@@ -1,8 +1,8 @@
-//! Merges the Mouser (`crate::mouser`) and DigiKey (`crate::digikey`)
-//! vendor clients into the single API `crates/app`'s "Populate BOM"
-//! flow actually talks to, and writes the merged result onto a KiCad
-//! symbol as new properties (`Mfr`, `Mfr #`, `<Vendor>`, `<Vendor> #`,
-//! `<Vendor> Qty/Price`).
+//! Merges the Mouser (`crate::mouser`), DigiKey (`crate::digikey`), and
+//! Arrow (`crate::arrow`) vendor clients into the single API `crates/app`'s
+//! "Populate BOM" flow actually talks to, and writes the merged result onto
+//! a KiCad symbol as new properties (`Mfr`, `Mfr #`, `<Vendor>`,
+//! `<Vendor> #`, `<Vendor> Qty/Price`).
 //!
 //! Replaces the earlier Octopart/Nexar integration (a single paid
 //! aggregator API) with two free-to-register direct vendor APIs.
@@ -49,7 +49,7 @@ pub enum StockStatus {
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct VendorOffer {
-    /// Display label: "Mouser" or "DigiKey".
+    /// Display label: "Mouser", "DigiKey", or "Arrow".
     pub seller: String,
     pub url: String,
     pub sku: String,
@@ -82,10 +82,8 @@ pub struct VendorOffer {
     /// deliberately not derived from "did the vendor report anything."
     pub lifecycle_concern: bool,
     /// A vendor-suggested replacement part number, when the vendor
-    /// offers one (Mouser's `SuggestedReplacement` field, most relevant
-    /// alongside an `"Obsolete"`/`"NRND"` lifecycle status) — empty
-    /// when none was given. DigiKey has no equivalent field, so this is
-    /// always empty for a DigiKey offer.
+    /// offers one (most relevant alongside an `"Obsolete"`/`"NRND"`
+    /// lifecycle status) — empty when the vendor doesn't provide one.
     pub suggested_replacement: String,
     /// The vendor's raw `(quantity, unit price)` break pairs, unsorted
     /// and uncapped — unlike `price_summary` (a human-readable string,
@@ -154,11 +152,11 @@ pub(crate) fn is_lifecycle_concern(status_text: &str) -> bool {
 /// Picks whichever of two description strings carries more actual
 /// content, measured by non-whitespace character count rather than raw
 /// length — so a padded-with-spaces string can't out-rank a denser one.
-/// Ties (including both empty) keep `a`. Shared by two call sites:
+/// Ties (including both empty) keep `a`. Shared by call sites including
 /// DigiKey's own `DetailedDescription` vs. `ProductDescription`
 /// (`digikey::parse_search_response`), and the final pick between
-/// Mouser's and DigiKey's descriptions (`combine_results` below) — same
-/// rule both times, so neither vendor structurally has the edge.
+/// descriptions from any configured vendor (`combine_results` below) — the
+/// rule treats all vendors equally.
 pub(crate) fn richer_description<'a>(a: &'a str, b: &'a str) -> &'a str {
     let non_whitespace_count = |s: &str| s.chars().filter(|c| !c.is_whitespace()).count();
     if non_whitespace_count(b) > non_whitespace_count(a) {
@@ -639,7 +637,7 @@ pub fn apply_part_info(sym_node: &mut SexpNode, info: &PartInfo) {
 
 /// Reconstructs a [`PartInfo`] from whatever [`apply_part_info`] last
 /// wrote onto `sym_node` — the read side of the same cache, used to
-/// skip a fresh Mouser/DigiKey lookup when the instance's own
+/// skip a fresh vendor lookup when the instance's own
 /// `Last Checked` property (`crate::populate_bom`) is still within the
 /// recheck window. `None` if `sym_node` was never
 /// looked up (no `Mfr #`), has no vendor offer at all, or every offer it
@@ -655,7 +653,7 @@ pub fn read_cached_part_info(sym_node: &SexpNode) -> Option<PartInfo> {
     let description = get_symbol_property(sym_node, "Vendor Description").unwrap_or_default();
 
     let mut offers = Vec::new();
-    for seller in ["Mouser", "DigiKey"] {
+    for seller in ["Mouser", "DigiKey", "Arrow"] {
         let Some(sku) =
             get_symbol_property(sym_node, &format!("{seller} #")).filter(|s| !s.is_empty())
         else {
@@ -1128,8 +1126,8 @@ mod tests {
 
     #[test]
     fn only_one_vendor_configured_and_it_fails_is_all_vendors_failed() {
-        let err =
-            combine_results("LM358P", Some(Err(MouserError::MissingApiKey)), None, None).unwrap_err();
+        let err = combine_results("LM358P", Some(Err(MouserError::MissingApiKey)), None, None)
+            .unwrap_err();
         assert!(matches!(err, PartsLookupError::AllVendorsFailed(_)));
     }
 
@@ -1319,7 +1317,8 @@ mod tests {
     fn read_cached_part_info_round_trips_apply_part_info() {
         let mut mouser = mouser_part("a");
         mouser.price_breaks = vec![(1.0, 0.55), (10.0, 0.41), (100.0, 0.32)];
-        let info = combine_results("LM358P", Some(Ok(mouser)), Some(Ok(digikey_part())), None).unwrap();
+        let info =
+            combine_results("LM358P", Some(Ok(mouser)), Some(Ok(digikey_part())), None).unwrap();
         let mut node = SexpNode::parse(r#"(symbol "U1" (property "Reference" "U"))"#).unwrap();
         apply_part_info(&mut node, &info);
 
@@ -1374,7 +1373,8 @@ mod tests {
         let mut mouser = mouser_part("a");
         mouser.lifecycle_summary = "Obsolete".to_string();
         mouser.lifecycle_concern = true;
-        let info = combine_results("LM358P", Some(Ok(mouser)), Some(Ok(digikey_part())), None).unwrap();
+        let info =
+            combine_results("LM358P", Some(Ok(mouser)), Some(Ok(digikey_part())), None).unwrap();
         assert!(info.lifecycle_concern());
     }
 

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { confirm, save } from "@tauri-apps/plugin-dialog";
+import { XlsxColumnsPanel } from "./XlsxColumnsPanel";
 
 // Mirrors `PartGroupRow` in `src-tauri/src/lib.rs`.
 interface PartGroupRow {
@@ -86,6 +87,72 @@ function defaultTimestamp(): string {
     .replace("T", "_");
 }
 
+function ExcelExportModal({ projectDir, onClose }: { projectDir: string; onClose: () => void }) {
+  const [exporting, setExporting] = useState(false);
+  const [status, setStatus] = useState<string | null>(null);
+
+  async function handleExport() {
+    const projectName = projectDir.split(/[/\\]/).filter(Boolean).pop() ?? "project";
+    const timestamp = defaultTimestamp();
+    const safeName = projectName.replace(/ /g, "_");
+
+    const xlsxPath = await save({
+      defaultPath: `${projectDir}/${safeName}_bom_${timestamp}.xlsx`,
+      filters: [{ name: "Excel Workbook", extensions: ["xlsx"] }],
+    });
+
+    if (!xlsxPath) return;
+
+    setExporting(true);
+    setStatus(null);
+    try {
+      await invoke("export_excel_bom", { xlsxPath });
+      setStatus("Exported successfully!");
+      setTimeout(() => onClose(), 1500);
+    } catch (exc) {
+      setStatus(`Export failed: ${exc}`);
+    } finally {
+      setExporting(false);
+    }
+  }
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-panel export-modal" onClick={(e) => e.stopPropagation()}>
+        <h3>Export to Excel</h3>
+        <p className="field-hint">
+          Select which columns to include and their order. Click "Save column order" to apply changes.
+        </p>
+        <div className="field-hint" style={{ backgroundColor: "var(--success-bg)", padding: "0.5rem", borderRadius: "4px", marginBottom: "1rem" }}>
+          <strong>💡 Dynamic Pricing:</strong> The exported Excel file includes formulas that automatically recalculate unit and total prices when you edit the "Order Qty" column, based on each vendor's price brackets.
+        </div>
+        <XlsxColumnsPanel />
+        {status && (
+          <p
+            className={`field-hint ${status.includes("failed") || status.includes("Export failed") ? "status-error" : "status-success"}`}
+            style={{ marginTop: "0.5rem" }}
+          >
+            {status}
+          </p>
+        )}
+        <div style={{ display: "flex", gap: "0.5rem", marginTop: "1rem" }}>
+          <button
+            type="button"
+            className="btn btn-primary"
+            onClick={handleExport}
+            disabled={exporting}
+          >
+            {exporting ? "Exporting…" : "Export"}
+          </button>
+          <button type="button" className="btn" onClick={onClose} disabled={exporting}>
+            Cancel
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function GenerateBom({ projectDir }: { projectDir: string }) {
   const [groups, setGroups] = useState<PartGroupRow[]>([]);
   const [boardQty, setBoardQty] = useState(1);
@@ -106,6 +173,7 @@ export function GenerateBom({ projectDir }: { projectDir: string }) {
   const [currentItem, setCurrentItem] = useState("");
   const [grandTotal, setGrandTotal] = useState<number | null>(null);
   const [ibomAvailable, setIbomAvailable] = useState(false);
+  const [showExportModal, setShowExportModal] = useState(false);
 
   async function loadGroups() {
     if (!projectDir) return;
@@ -216,17 +284,6 @@ export function GenerateBom({ projectDir }: { projectDir: string }) {
       }
     }
 
-    const timestamp = defaultTimestamp();
-    const safeName = projectName.replace(/ /g, "_");
-    const pdfPath = await save({
-      defaultPath: `${projectDir}/${safeName}_bom_${timestamp}.pdf`,
-      filters: [{ name: "PDF", extensions: ["pdf"] }],
-    });
-    const xlsxPath = await save({
-      defaultPath: `${projectDir}/${safeName}_bom_${timestamp}.xlsx`,
-      filters: [{ name: "Excel Workbook", extensions: ["xlsx"] }],
-    });
-
     setProgressTotal(groups.length);
     setInProgress(true);
 
@@ -269,6 +326,7 @@ export function GenerateBom({ projectDir }: { projectDir: string }) {
       mouser_api_key: settings.mouser_api_key,
       digikey_client_id: settings.digikey_client_id,
       digikey_client_secret: settings.digikey_client_secret,
+      arrow_api_key: settings.arrow_api_key,
     };
 
     await invoke("generate_bom", {
@@ -276,8 +334,8 @@ export function GenerateBom({ projectDir }: { projectDir: string }) {
       boardQty,
       passiveMarginPercent,
       forceRecheck,
-      pdfPath,
-      xlsxPath,
+      pdfPath: "",
+      xlsxPath: "",
       credentials,
       preferredVendor,
     });
@@ -506,10 +564,23 @@ export function GenerateBom({ projectDir }: { projectDir: string }) {
         </div>
       )}
 
+      {showExportModal && (
+        <ExcelExportModal projectDir={projectDir} onClose={() => setShowExportModal(false)} />
+      )}
+
       <div className="form-actions">
         <button type="button" className="btn btn-primary" onClick={generate} disabled={inProgress}>
           {inProgress ? "Pricing…" : "Generate BOM"}
         </button>
+        {grandTotal !== null && (
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={() => setShowExportModal(true)}
+          >
+            Export Excel
+          </button>
+        )}
         {ibomAvailable && (
           <button
             type="button"

@@ -69,11 +69,7 @@ pub struct PartsCache {
 
 impl PartsCache {
     fn db_path() -> Option<PathBuf> {
-        Some(
-            dirs::config_dir()?
-                .join("kicad-bom-tool")
-                .join(CACHE_DIR),
-        )
+        Some(dirs::config_dir()?.join("kicad-bom-tool").join(CACHE_DIR))
     }
 
     /// Never fails — same philosophy as `VendorCredentials::load`: no
