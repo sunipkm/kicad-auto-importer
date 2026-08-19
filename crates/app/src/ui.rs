@@ -3,6 +3,7 @@
 //! Browse… buttons, an options group, a start/stop watch toggle, manual
 //! one-shot import buttons, and a log pane.
 
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
@@ -186,8 +187,16 @@ impl MainApp {
                 project_dir.display()
             ));
         } else {
+            // No settings saved yet — default the symbol/footprint
+            // library names to the project's own name (matching what
+            // KiCad itself does for the .kicad_pro/.kicad_sch/.kicad_pcb
+            // trio) instead of leaving them blank, so a first-time user
+            // isn't required to type a name before anything works.
+            let name = project_name(&project_dir);
+            self.symbol_lib = format!("${{KIPRJMOD}}/{name}.kicad_sym");
+            self.footprint_lib = format!("${{KIPRJMOD}}/{name}.pretty");
             self.log(format!(
-                "No settings file yet for project '{}' \u{2014} using blank defaults.",
+                "No settings file yet for project '{}' \u{2014} defaulting libraries to '{name}'.",
                 project_dir.display()
             ));
         }
@@ -477,10 +486,13 @@ impl MainApp {
         // browsing to a library you already have, which is misleading
         // (nothing gets overwritten), but that's the lesser of the two
         // problems — the user just confirms it and nothing is lost.
-        if let Some(mut path) = rfd::FileDialog::new()
-            .add_filter("KiCad symbol library", &["kicad_sym"])
-            .save_file()
-        {
+        let mut dialog = rfd::FileDialog::new().add_filter("KiCad symbol library", &["kicad_sym"]);
+        if let Some(project_dir) = self.project_dir() {
+            dialog = dialog
+                .set_directory(&project_dir)
+                .set_file_name(project_name(&project_dir));
+        }
+        if let Some(mut path) = dialog.save_file() {
             // Not every platform's save dialog appends the filter's
             // extension on its own for a freshly-typed name — same
             // belt-and-suspenders `set_extension` `browse_footprint_lib`
@@ -506,7 +518,13 @@ impl MainApp {
         // (`footprint_importer`'s `fs::create_dir_all`), so a `save_file`
         // dialog's typed-but-nonexistent path is exactly as usable here
         // as a real file path is for `browse_symbol_lib`.
-        if let Some(mut path) = rfd::FileDialog::new().save_file() {
+        let mut dialog = rfd::FileDialog::new();
+        if let Some(project_dir) = self.project_dir() {
+            dialog = dialog
+                .set_directory(&project_dir)
+                .set_file_name(project_name(&project_dir));
+        }
+        if let Some(mut path) = dialog.save_file() {
             if path.extension().is_none_or(|e| e != "pretty") {
                 path.set_extension("pretty");
             }
@@ -530,6 +548,34 @@ fn kicad_pro_parent_dir(path: &str) -> Option<String> {
     }
     p.parent()
         .map(|parent| parent.to_string_lossy().to_string())
+}
+
+/// The project's own name, for defaulting the symbol/footprint library
+/// names — the `.kicad_pro` file's stem if `project_dir` contains
+/// exactly one (KiCad always names a project directory after its own
+/// `.kicad_pro`, but this tolerates a directory with none or several by
+/// falling back to the directory's own name instead of guessing wrong).
+fn project_name(project_dir: &Path) -> String {
+    let mut kicad_pro_stems = fs::read_dir(project_dir)
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| {
+            p.extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("kicad_pro"))
+        })
+        .filter_map(|p| p.file_stem().map(|s| s.to_string_lossy().to_string()));
+    let first = kicad_pro_stems.next();
+    if let Some(name) = first {
+        if kicad_pro_stems.next().is_none() {
+            return name;
+        }
+    }
+    project_dir
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "Project".to_string())
 }
 
 /// A labeled path field that fills all remaining horizontal space in
@@ -904,5 +950,30 @@ mod tests {
             kicad_pro_parent_dir("/home/user/MyProject/MyProject.kicad_sch"),
             None
         );
+    }
+
+    #[test]
+    fn project_name_uses_the_kicad_pro_stem() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("Widget.kicad_pro"), "{}").unwrap();
+        assert_eq!(project_name(dir.path()), "Widget");
+    }
+
+    #[test]
+    fn project_name_falls_back_to_the_directory_name_without_a_kicad_pro() {
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("MyProjectDir");
+        fs::create_dir(&sub).unwrap();
+        assert_eq!(project_name(&sub), "MyProjectDir");
+    }
+
+    #[test]
+    fn project_name_falls_back_to_the_directory_name_with_ambiguous_kicad_pro_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("MyProjectDir");
+        fs::create_dir(&sub).unwrap();
+        fs::write(sub.join("A.kicad_pro"), "{}").unwrap();
+        fs::write(sub.join("B.kicad_pro"), "{}").unwrap();
+        assert_eq!(project_name(&sub), "MyProjectDir");
     }
 }

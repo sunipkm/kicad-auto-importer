@@ -339,6 +339,22 @@ pub fn import_symbols(
         &mut log,
     );
 
+    // The fp-lib-table entry just registered above points at this
+    // directory, but nothing else here is guaranteed to create it — the
+    // per-symbol loop below only creates it (via `FootprintImporter::new`)
+    // when a source footprint file actually resolves. If none of the
+    // selected symbols' footprints resolve (e.g. all left unchanged with
+    // a warning), the directory would never exist on disk even though
+    // it's registered, and KiCad's project-specific-libraries panel
+    // silently omits table entries whose URI doesn't exist — which looks
+    // exactly like "the footprint library never got added", unlike the
+    // symbol library below, which is always created/saved unconditionally.
+    if let Err(exc) = fs::create_dir_all(&settings.footprint_lib) {
+        log(&format!(
+            "  \u{26a0} Could not create footprint library directory: {exc}"
+        ));
+    }
+
     let mut dest_lib = match SymbolLibrary::open_or_create(&settings.symbol_lib) {
         Ok(lib) => lib,
         Err(exc) => {
@@ -601,6 +617,73 @@ mod tests {
     }
 
     #[test]
+    fn kiprjmod_relative_model_path_in_source_footprint_resolves_and_gets_repatched() {
+        let source_dir = tempdir().unwrap();
+        fs::write(
+            source_dir.path().join("sym-lib-table"),
+            r#"(sym_lib_table (version 7)
+  (lib (name "Src")(type "KiCad")(uri "${KIPRJMOD}/Src.kicad_sym")(options "")(descr ""))
+)"#,
+        )
+        .unwrap();
+        fs::write(
+            source_dir.path().join("fp-lib-table"),
+            r#"(fp_lib_table (version 7)
+  (lib (name "SrcFP")(type "KiCad")(uri "${KIPRJMOD}/SrcFP.pretty")(options "")(descr ""))
+)"#,
+        )
+        .unwrap();
+        fs::write(
+            source_dir.path().join("Src.kicad_sym"),
+            r#"(kicad_symbol_lib (version 20231120) (generator test)
+  (symbol "Widget"
+    (property "Footprint" "SrcFP:Widget" (at 0 0 0))
+  )
+)"#,
+        )
+        .unwrap();
+        fs::create_dir_all(source_dir.path().join("SrcFP.pretty")).unwrap();
+        fs::write(
+            source_dir.path().join("SrcFP.pretty").join("Widget.kicad_mod"),
+            r#"(footprint "Widget" (model "${KIPRJMOD}/3dmodels/Widget.step"))"#,
+        )
+        .unwrap();
+        fs::create_dir_all(source_dir.path().join("3dmodels")).unwrap();
+        fs::write(
+            source_dir.path().join("3dmodels").join("Widget.step"),
+            b"fake step data",
+        )
+        .unwrap();
+
+        let dest_dir = tempdir().unwrap();
+        let rows = load_project_symbols(source_dir.path(), |_| {});
+        assert_eq!(rows.len(), 1);
+        let selected: Vec<&SourceSymbol> = rows.iter().collect();
+
+        let settings = CrossImportSettings {
+            symbol_lib: dest_dir.path().join("Combined.kicad_sym"),
+            footprint_lib: dest_dir.path().join("Combined.pretty"),
+            project_path: dest_dir.path().to_path_buf(),
+            model_subdir: "3dmodels".to_string(),
+            overwrite: false,
+        };
+
+        let summary = import_symbols(
+            &selected,
+            source_dir.path(),
+            &settings,
+            |_| {},
+            |_, _, _| {},
+        );
+        assert!(summary.contains("1 model(s)"));
+
+        let footprint_text =
+            fs::read_to_string(settings.footprint_lib.join("Widget.kicad_mod")).unwrap();
+        assert!(footprint_text.contains("${KIPRJMOD}/3dmodels/Widget.step"));
+        assert!(fs::metadata(dest_dir.path().join("3dmodels").join("Widget.step")).is_ok());
+    }
+
+    #[test]
     fn end_to_end_import_registers_libraries_and_patches_paths() {
         let source_dir = tempdir().unwrap();
         write_source_project(source_dir.path());
@@ -729,5 +812,14 @@ mod tests {
         let sym_source = fs::read_to_string(&settings.symbol_lib).unwrap();
         // Dangling reference preserved verbatim, not rewritten to garbage.
         assert!(sym_source.contains("NoSuchLib:NoSuchFP"));
+
+        // The fp-lib-table entry registered up front must point at a
+        // directory that actually exists, even though no footprint ever
+        // resolved in this batch — otherwise KiCad's project-specific
+        // libraries panel silently omits the entry, looking exactly like
+        // the footprint library was never added at all.
+        assert!(settings.footprint_lib.is_dir());
+        let fp_lib_table = fs::read_to_string(dest_dir.path().join("fp-lib-table")).unwrap();
+        assert!(fp_lib_table.contains("Combined"));
     }
 }
