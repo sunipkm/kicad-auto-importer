@@ -644,7 +644,10 @@ mod tests {
         .unwrap();
         fs::create_dir_all(source_dir.path().join("SrcFP.pretty")).unwrap();
         fs::write(
-            source_dir.path().join("SrcFP.pretty").join("Widget.kicad_mod"),
+            source_dir
+                .path()
+                .join("SrcFP.pretty")
+                .join("Widget.kicad_mod"),
             r#"(footprint "Widget" (model "${KIPRJMOD}/3dmodels/Widget.step"))"#,
         )
         .unwrap();
