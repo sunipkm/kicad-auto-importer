@@ -328,6 +328,24 @@ impl MainApp {
         }
     }
 
+    /// Whether hiding the window to the tray on close is actually safe,
+    /// i.e. whether a tray icon exists for the user to bring it back
+    /// from. On Windows/macOS the tray is built inline in `main` and
+    /// stored directly (`_tray_icon`); on Linux it's built asynchronously
+    /// on a dedicated GTK thread and can fail for reasons outside this
+    /// app's control (no `StatusNotifierWatcher`, no D-Bus session), so
+    /// `tray::is_available` is checked instead (see its docs).
+    fn tray_available(&self) -> bool {
+        #[cfg(target_os = "linux")]
+        {
+            tray::is_available()
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            self._tray_icon.is_some()
+        }
+    }
+
     fn drain_log_channel(&mut self) {
         let mut lines = Vec::new();
         if let Some(rx) = &self.log_rx {
@@ -342,7 +360,18 @@ impl MainApp {
     }
 
     fn show_and_focus(ctx: &egui::Context) {
+        // `Visible(true)` undoes the X11 hide path below; `Minimized(false)`
+        // undoes the minimize fallback the same path uses on Wayland,
+        // where `Visible` is a documented no-op either direction
+        // (winit's `platform_impl::linux::wayland::window::set_visible`:
+        // "Not possible on Wayland"). Note winit *also* can't
+        // programmatically un-minimize on Wayland ("You can't unminimize
+        // the window on Wayland" — the call is accepted but ignored), so
+        // this is best-effort there: the compositor's own affordance
+        // (e.g. clicking the app in the dock) is what actually restores
+        // it, same as it would for any other minimized window.
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
         ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
     }
 
@@ -633,9 +662,20 @@ impl eframe::App for MainApp {
         let can_start = self.can_start_watching();
         self.sync_tray_toggle(watching, can_start);
 
-        if ctx.input(|i| i.viewport().close_requested()) && !self.force_quit {
+        if ctx.input(|i| i.viewport().close_requested())
+            && !self.force_quit
+            && self.tray_available()
+        {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            // `Visible(false)` is all this needs on X11, but it's a
+            // silent no-op on Wayland (see `show_and_focus`'s docs) —
+            // without also minimizing, the window would stay fully
+            // visible and clicking the title bar's Close button would
+            // look like it did nothing. `Minimized(true)` *is* honored
+            // on Wayland, so send both: each platform picks up whichever
+            // one it actually supports.
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
         }
 
         egui::TopBottomPanel::top("title_bar")

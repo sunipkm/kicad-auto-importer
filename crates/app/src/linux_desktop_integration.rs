@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 
 use crate::icon_render::render_icon_rgba;
 
-const APP_ID: &str = "kicad-auto-importer";
+pub const APP_ID: &str = "kicad-auto-importer";
 
 /// Standard hicolor theme sizes; also covers what most taskbars/launchers
 /// pick for HiDPI without upscaling a single small source image.

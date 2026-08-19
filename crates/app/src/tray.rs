@@ -65,6 +65,31 @@ static WATCHING: AtomicBool = AtomicBool::new(false);
 #[cfg(target_os = "linux")]
 static CAN_START: AtomicBool = AtomicBool::new(false);
 
+/// Set once `spawn`'s GTK thread has actually got a tray icon on screen.
+/// Building it can fail for reasons entirely outside this app's control —
+/// no `StatusNotifierWatcher` running (plain GNOME without the
+/// AppIndicator extension), no D-Bus session, `gtk::init` failing in a
+/// minimal environment — and `spawn` only ever `eprintln!`s on failure,
+/// it doesn't propagate anything back. Without this flag `MainApp` has no
+/// way to tell "the tray icon is up, hiding to it is safe" apart from
+/// "there is no tray, hiding the window would strand the user with no
+/// way to ever get it back or quit" (see `ui::MainApp::update`'s
+/// close-request interception, which checks `is_available` before
+/// deciding to hide rather than actually close).
+#[cfg(target_os = "linux")]
+static TRAY_AVAILABLE: AtomicBool = AtomicBool::new(false);
+
+/// Whether it's currently safe to hide the window to the tray instead of
+/// closing it — i.e. whether a tray icon actually exists for the user to
+/// bring the window back from. On Linux this reflects whether `spawn`'s
+/// GTK thread managed to build one; on other platforms the caller already
+/// holds the `TrayIcon` directly (`MainApp::_tray_icon`) and should check
+/// that instead, so this is unused there.
+#[cfg(target_os = "linux")]
+pub fn is_available() -> bool {
+    TRAY_AVAILABLE.load(Ordering::Relaxed)
+}
+
 /// Called from `MainApp::update` every frame with the current watching
 /// state and whether `start_watching` would currently succeed. On
 /// Linux this only updates the two atomics above; `spawn`'s periodic
@@ -163,6 +188,7 @@ pub fn spawn() {
                     // Never read again, but must outlive `gtk::main()` or
                     // the tray icon would be torn down immediately.
                     let _tray_icon = tray_icon;
+                    TRAY_AVAILABLE.store(true, Ordering::Relaxed);
 
                     let mut last_watching = WATCHING.load(Ordering::Relaxed);
                     let mut last_can_start = CAN_START.load(Ordering::Relaxed);

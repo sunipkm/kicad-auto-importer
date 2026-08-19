@@ -23,7 +23,14 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-const APP_ID: &str = "kicad-bom-tool";
+/// Must match `identifier` in `tauri.conf.json`, which — with
+/// `enableGTKAppId` on — is exactly what Tauri hands GTK as the
+/// application's app id (see `tauri::app`'s `RuntimeInitArgs::app_id`
+/// wiring). GNOME/Wayland matches a running window to a `.desktop` file
+/// by that id, so the desktop file's own filename and `StartupWMClass`
+/// (and thus this constant) have to agree with it, or the taskbar/dock
+/// falls back to a generic icon instead of the one installed below.
+const APP_ID: &str = "com.sunipkm.kicadautoimporter.bomapp";
 
 /// `(hicolor size, embedded PNG bytes)` — sized to exactly match files
 /// already shipped in `icons/` for Tauri's own bundler, so writing them

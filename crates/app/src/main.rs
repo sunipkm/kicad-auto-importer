@@ -72,12 +72,24 @@ fn main() -> eframe::Result<()> {
     #[cfg(target_os = "linux")]
     tray::spawn();
 
+    #[allow(unused_mut)]
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_inner_size([920.0, 780.0])
+        .with_min_inner_size([640.0, 480.0])
+        .with_decorations(false)
+        .with_icon(icon::app_icon());
+    // Must match the `.desktop` file's `StartupWMClass`/id and its
+    // installed hicolor icons (see `linux_desktop_integration::APP_ID`)
+    // or the window manager/taskbar can't associate this window with
+    // either, and falls back to a generic icon — the whole reason this
+    // app has no icon on GNOME/Wayland taskbars without this.
+    #[cfg(target_os = "linux")]
+    {
+        viewport = viewport.with_app_id(linux_desktop_integration::APP_ID);
+    }
+
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([920.0, 780.0])
-            .with_min_inner_size([640.0, 480.0])
-            .with_decorations(false)
-            .with_icon(icon::app_icon()),
+        viewport,
         ..Default::default()
     };
     eframe::run_native(
