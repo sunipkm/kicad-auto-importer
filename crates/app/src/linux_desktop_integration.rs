@@ -106,6 +106,17 @@ fn write_icon(data_home: &Path, size: u32) -> Result<(), Box<dyn std::error::Err
 fn write_desktop_file(path: &Path, exec_line: &str) -> Result<(), Box<dyn std::error::Error>> {
     fs::create_dir_all(path.parent().expect("desktop_path always has a parent"))?;
     let mut file = fs::File::create(path)?;
+    // Without an explicit `Path=`, the working directory a
+    // desktop-launched process starts in is up to whichever launcher
+    // ran it — some default to `/`, which the app then has no
+    // permission to create anything under. `watch_folder`/library path
+    // fields are meant to always hold absolute paths anyway, so this is
+    // only ever a fallback, but it turns "silently inherits an
+    // unwritable cwd" into "silently inherits the user's own home
+    // directory" instead, which is always writable.
+    let home_line = std::env::var_os("HOME")
+        .map(|home| format!("Path={}\n", quote(Path::new(&home))))
+        .unwrap_or_default();
     write!(
         file,
         "[Desktop Entry]\n\
@@ -114,6 +125,7 @@ fn write_desktop_file(path: &Path, exec_line: &str) -> Result<(), Box<dyn std::e
          Name=KiCad Auto Importer\n\
          Comment=Watches a folder for KiCad part-provider downloads and imports them into your project's libraries automatically\n\
          {exec_line}\n\
+         {home_line}\
          Icon={APP_ID}\n\
          Terminal=false\n\
          Categories=Development;Electronics;\n\

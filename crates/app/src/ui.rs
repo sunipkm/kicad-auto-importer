@@ -146,7 +146,18 @@ impl MainApp {
         }
     }
 
+    /// Untrimmed leading/trailing whitespace here — e.g. a trailing
+    /// newline pasted in from a terminal's `pwd` output — breaks
+    /// `Path::is_absolute()` (a leading space makes the path start with
+    /// a `" "` component instead of `/`), silently turning what looks
+    /// like an absolute path into a relative one. Every fs operation
+    /// downstream of `build_settings` (`create_dir_all` for the watch
+    /// folder chief among them) then resolves it against the process's
+    /// working directory instead — for a desktop-launched instance
+    /// that's often `/`, so the failure shows up as a confusing
+    /// "Permission denied" on a path that *looks* fine in the field.
     fn to_absolute(&self, display: &str) -> PathBuf {
+        let display = display.trim();
         if display.is_empty() {
             return PathBuf::new();
         }
