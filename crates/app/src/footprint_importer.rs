@@ -58,13 +58,33 @@ impl<'a> FootprintImporter<'a> {
         model_name_map: &HashMap<String, PathBuf>,
         model_dir: Option<&Path>,
     ) -> HashMap<String, String> {
+        // Some distributor exports (observed from Mouser's KiCad
+        // downloads) ship a footprint and its STEP file as unrelated
+        // sibling files with no `(model ...)` reference inside the
+        // footprint at all — there's nothing for `patch_model_paths` to
+        // rewrite, so the model would otherwise get copied to the
+        // project's model directory and never actually get attached to
+        // anything. When this batch is unambiguous (exactly one
+        // footprint, exactly one distinct model copied alongside it),
+        // that pairing is safe to assume; anything less certain is left
+        // alone rather than guessing wrong.
+        let sole_model_fallback = (fp_files.len() == 1)
+            .then(|| {
+                let mut distinct = model_name_map.values().collect::<std::collections::HashSet<_>>();
+                (distinct.len() == 1).then(|| distinct.drain().next().cloned())
+            })
+            .flatten()
+            .flatten();
+
         let mut name_map = HashMap::new();
         for fp_path in fp_files {
             let orig_name = fp_path
                 .file_stem()
                 .map(|s| s.to_string_lossy().to_string())
                 .unwrap_or_default();
-            if let Some(imported) = self.import_one(fp_path, model_name_map, model_dir) {
+            if let Some(imported) =
+                self.import_one(fp_path, model_name_map, model_dir, sole_model_fallback.as_deref())
+            {
                 name_map.insert(orig_name, imported);
             }
         }
@@ -76,6 +96,7 @@ impl<'a> FootprintImporter<'a> {
         src_path: &Path,
         model_name_map: &HashMap<String, PathBuf>,
         model_dir: Option<&Path>,
+        fallback_model: Option<&Path>,
     ) -> Option<String> {
         let name = src_path
             .file_stem()
@@ -89,12 +110,25 @@ impl<'a> FootprintImporter<'a> {
         }
 
         let content = fs::read_to_string(src_path).ok()?;
+        let had_model_ref = model_path_re().is_match(&content);
         let patched = patch_model_paths(
             &content,
             model_name_map,
             model_dir,
             self.project_path.as_deref(),
         );
+        let patched = if !had_model_ref {
+            if let Some(fallback) = fallback_model {
+                (self.log)(&format!(
+                    "  \u{2139} Footprint '{name}' had no 3-D model reference \u{2014} attaching the sole model imported alongside it."
+                ));
+                append_model_reference(&patched, fallback, self.project_path.as_deref())
+            } else {
+                patched
+            }
+        } else {
+            patched
+        };
         fs::write(&dest_path, patched).ok()?;
 
         (self.log)(&format!(
@@ -158,6 +192,31 @@ pub fn patch_model_paths(
         .to_string()
 }
 
+/// Inserts a brand-new `(model "...")` block into a footprint that has
+/// none at all, right before the footprint's closing paren, with a
+/// neutral zero-offset/unit-scale/zero-rotation transform. Used when a
+/// source footprint never referenced a 3-D model in the first place
+/// (see `FootprintImporter::import_all`'s `sole_model_fallback`), so
+/// there is no existing `(model ...)` text for `patch_model_paths` to
+/// rewrite.
+fn append_model_reference(content: &str, model_path: &Path, project_path: Option<&Path>) -> String {
+    let uri = match project_path {
+        Some(project_path) => kiprjmod_relative_uri(model_path, project_path),
+        None => model_path.to_string_lossy().replace('\\', "/"),
+    };
+    let escaped = uri.replace('\\', "\\\\").replace('"', "\\\"");
+
+    let trimmed = content.trim_end();
+    let Some(close_idx) = trimmed.rfind(')') else {
+        return content.to_string();
+    };
+    format!(
+        "{}\t(model \"{escaped}\"\n\t\t(offset (xyz 0 0 0))\n\t\t(scale (xyz 1 1 1))\n\t\t(rotate (xyz 0 0 0))\n\t)\n{}",
+        &trimmed[..close_idx],
+        &trimmed[close_idx..]
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -210,5 +269,48 @@ mod tests {
         assert!(patched.contains("(property pad_prop_castellated)"));
         assert!(patched.contains(r#"(property ki_fp_filters "Connector*:*_2x??_*")"#));
         assert!(patched.contains(r#"(model "${KIPRJMOD}/3dmodels/Part.step")"#));
+    }
+
+    #[test]
+    fn append_model_reference_inserts_before_the_closing_paren() {
+        let content = "(footprint \"Conn\"\n\t(pad \"1\" thru_hole circle (at 0 0) (size 1 1) (drill 1))\n)";
+        let patched =
+            append_model_reference(content, Path::new("/proj/3dmodels/Part.stp"), Some(Path::new("/proj")));
+        assert!(patched.contains(r#"(model "${KIPRJMOD}/3dmodels/Part.stp""#));
+        assert!(patched.contains("(pad \"1\" thru_hole circle (at 0 0) (size 1 1) (drill 1))"));
+        assert!(patched.trim_end().ends_with(')'));
+    }
+
+    #[test]
+    fn a_footprint_shipped_with_no_model_reference_gets_the_sole_imported_model_attached() {
+        // Regression test for a real-world Mouser/UltraLibrarian export:
+        // the footprint and its STEP file are unrelated sibling files
+        // with no `(model ...)` link between them at all.
+        let dir = tempdir().unwrap();
+        let lib_dir = dir.path().join("Combined.pretty");
+        let src_fp = dir.path().join("CONN_48404-0003_MOL.kicad_mod");
+        fs::write(
+            &src_fp,
+            "(footprint \"CONN_48404-0003_MOL\"\n\t(pad \"1\" thru_hole circle (at 0 0) (size 1 1) (drill 1))\n)",
+        )
+        .unwrap();
+
+        let model_dest = dir.path().join("3dmodels").join("484040003.stp");
+        fs::create_dir_all(model_dest.parent().unwrap()).unwrap();
+        fs::write(&model_dest, b"fake step data").unwrap();
+        let mut model_name_map = HashMap::new();
+        model_name_map.insert("484040003.stp".to_string(), model_dest.clone());
+        model_name_map.insert("484040003".to_string(), model_dest.clone());
+
+        let mut fi =
+            FootprintImporter::new(&lib_dir, false, Some(dir.path().to_path_buf()), |_| {}).unwrap();
+        let name_map = fi.import_all(std::slice::from_ref(&src_fp), &model_name_map, None);
+        assert_eq!(
+            name_map.get("CONN_48404-0003_MOL"),
+            Some(&"CONN_48404-0003_MOL".to_string())
+        );
+
+        let imported = fs::read_to_string(lib_dir.join("CONN_48404-0003_MOL.kicad_mod")).unwrap();
+        assert!(imported.contains(r#"(model "${KIPRJMOD}/3dmodels/484040003.stp""#));
     }
 }
