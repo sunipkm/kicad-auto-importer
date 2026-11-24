@@ -27,7 +27,7 @@ fn fg_rgba() -> [u8; 4] {
 pub fn render_icon_rgba(size: u32) -> Vec<u8> {
     let bg = bg_rgba();
     let mut rgba = vec![0u8; (size * size * 4) as usize];
-    for pixel in rgba.chunks_exact_mut(4) {
+    for pixel in rgba.as_chunks_mut::<4>().0 {
         pixel.copy_from_slice(&bg);
     }
 
@@ -58,7 +58,7 @@ pub fn render_icon_rgba(size: u32) -> Vec<u8> {
 pub fn render_dmg_background_rgba(width: u32, height: u32) -> Vec<u8> {
     let bg = bg_rgba();
     let mut rgba = vec![0u8; (width * height * 4) as usize];
-    for pixel in rgba.chunks_exact_mut(4) {
+    for pixel in rgba.as_chunks_mut::<4>().0 {
         pixel.copy_from_slice(&bg);
     }
 
