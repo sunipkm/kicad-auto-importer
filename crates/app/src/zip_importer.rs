@@ -22,6 +22,7 @@ use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
 use crate::footprint_importer::FootprintImporter;
+use crate::kicad_refresh::{self, ChangedLibraries, TablesBefore};
 use crate::model_importer::ModelImporter;
 use kicad_parse::kicad_paths::register_project_library;
 use kicad_parse::sexp::{Child, SexpError, SexpNode};
@@ -174,6 +175,9 @@ pub fn import_from_directory(
         return Err(ImportError::NothingToImport);
     }
 
+    let tables_before = TablesBefore::read(&settings.project_path);
+    let mut changed = ChangedLibraries::default();
+
     // Ensure the destination libraries are registered in the project's
     // sym-lib-table / fp-lib-table, so KiCad actually sees them without
     // any manual "Add Library" step. Only attempted for a table when
@@ -190,14 +194,15 @@ pub fn import_from_directory(
             "fp-lib-table",
             &mut log,
         );
+        changed.footprint = Some(fp_lib_name.clone());
     }
     if !sym_files.is_empty() {
-        register_project_library(
+        changed.symbol = Some(register_project_library(
             Some(&settings.project_path),
             &settings.symbol_lib,
             "sym-lib-table",
             &mut log,
-        );
+        ));
     }
 
     // Resolve model directory & import models.
@@ -260,6 +265,8 @@ pub fn import_from_directory(
         }
         lib.save()?;
     }
+
+    kicad_refresh::refresh(&changed, &tables_before, &mut log);
 
     Ok(format!(
         "{} sym, {} fp, {} model(s) imported",
@@ -492,5 +499,33 @@ mod tests {
         assert!(footprint_text.contains("${KIPRJMOD}/3dmodels/OrigFP.step"));
 
         assert!(fs::metadata(project_dir.path().join("3dmodels").join("OrigFP.step")).is_ok());
+    }
+
+    /// Imports into the project a patched KiCad has open and expects it to
+    /// reload the libraries: `KICAD_REFRESH_TEST_DIR` is the folder of its
+    /// API socket, `KICAD_REFRESH_TEST_PROJECT` the project,
+    /// `KICAD_REFRESH_TEST_PARTS` a folder with a part to import.
+    #[test]
+    #[ignore = "needs a running KiCad with the RefreshLibraries command"]
+    fn live_kicad_reloads_an_import() {
+        let var = |name| PathBuf::from(std::env::var_os(name).expect(name));
+        let project = var("KICAD_REFRESH_TEST_PROJECT");
+        let settings = ImportSettings {
+            symbol_lib: project.join("Imported.kicad_sym"),
+            footprint_lib: project.join("Imported.pretty"),
+            project_path: project,
+            model_subdir: "3dmodels".to_string(),
+            overwrite: true,
+            watch_folder: None,
+            move_zip: false,
+            backup_zip: false,
+        };
+        let mut logs = Vec::new();
+        import_from_directory(&var("KICAD_REFRESH_TEST_PARTS"), &settings, |m| {
+            logs.push(m.to_string())
+        })
+        .unwrap();
+        println!("{}", logs.join("\n"));
+        assert!(logs.iter().any(|l| l.contains("KiCad reloaded Imported")));
     }
 }

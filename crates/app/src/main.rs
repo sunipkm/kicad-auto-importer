@@ -6,6 +6,7 @@ mod global_settings;
 mod icon;
 mod icon_colors;
 mod icon_render;
+mod kicad_refresh;
 mod library_import;
 mod library_import_ui;
 #[cfg(target_os = "linux")]

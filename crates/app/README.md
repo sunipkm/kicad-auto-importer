@@ -32,6 +32,11 @@ together.
   imports a single ZIP / folder on demand.
 - Registers imported symbol and footprint libraries in the target
   project's `sym-lib-table` / `fp-lib-table` automatically.
+- Tells a running KiCad to reload the libraries an import changed, so new
+  parts show up without restarting it. Needs a KiCad with the
+  `RefreshLibraries` API command (a patched 10.0.8) and its API turned on
+  (Preferences > Plugins > Enable KiCad API); any other KiCad has to be
+  restarted to see an import.
 - Copies referenced 3-D models into the project and rewrites model
   paths to a `${KIPRJMOD}`-relative URI.
 - Optional move-after-import and timestamped backups of the source ZIP.

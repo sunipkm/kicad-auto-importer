@@ -22,6 +22,7 @@ use walkdir::WalkDir;
 use crate::footprint_importer::{model_path_re, FootprintImporter};
 use crate::model_importer::ModelImporter;
 use crate::zip_importer::resolve_model_dir;
+use crate::kicad_refresh::{self, ChangedLibraries, TablesBefore};
 use kicad_parse::kicad_paths::{self, expand_kicad_vars, register_project_library, LibEntry};
 use kicad_parse::sexp::{Child, SexpNode};
 use kicad_parse::symbol_importer::{
@@ -326,13 +327,14 @@ pub fn import_symbols(
 ) -> String {
     let fp_table = load_combined_fp_table(source_project_dir);
 
+    let tables_before = TablesBefore::read(&settings.project_path);
     let dest_fp_lib_name = register_project_library(
         Some(&settings.project_path),
         &settings.footprint_lib,
         "fp-lib-table",
         &mut log,
     );
-    register_project_library(
+    let dest_sym_lib_name = register_project_library(
         Some(&settings.project_path),
         &settings.symbol_lib,
         "sym-lib-table",
@@ -541,6 +543,12 @@ pub fn import_symbols(
         ));
         errors += 1;
     }
+
+    let changed = ChangedLibraries {
+        symbol: Some(dest_sym_lib_name),
+        footprint: Some(dest_fp_lib_name),
+    };
+    kicad_refresh::refresh(&changed, &tables_before, &mut log);
 
     let mut summary =
         format!("{imported_syms} symbol(s), {imported_fps} footprint(s), {imported_models} model(s) imported");
