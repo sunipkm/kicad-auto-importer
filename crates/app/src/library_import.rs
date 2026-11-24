@@ -20,9 +20,9 @@ use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
 use crate::footprint_importer::{model_path_re, FootprintImporter};
+use crate::kicad_refresh::{self, ChangedLibraries, TablesBefore};
 use crate::model_importer::ModelImporter;
 use crate::zip_importer::resolve_model_dir;
-use crate::kicad_refresh::{self, ChangedLibraries, TablesBefore};
 use kicad_parse::kicad_paths::{self, expand_kicad_vars, register_project_library, LibEntry};
 use kicad_parse::sexp::{Child, SexpNode};
 use kicad_parse::symbol_importer::{

@@ -70,7 +70,9 @@ impl<'a> FootprintImporter<'a> {
         // alone rather than guessing wrong.
         let sole_model_fallback = (fp_files.len() == 1)
             .then(|| {
-                let mut distinct = model_name_map.values().collect::<std::collections::HashSet<_>>();
+                let mut distinct = model_name_map
+                    .values()
+                    .collect::<std::collections::HashSet<_>>();
                 (distinct.len() == 1).then(|| distinct.drain().next().cloned())
             })
             .flatten()
@@ -82,9 +84,12 @@ impl<'a> FootprintImporter<'a> {
                 .file_stem()
                 .map(|s| s.to_string_lossy().to_string())
                 .unwrap_or_default();
-            if let Some(imported) =
-                self.import_one(fp_path, model_name_map, model_dir, sole_model_fallback.as_deref())
-            {
+            if let Some(imported) = self.import_one(
+                fp_path,
+                model_name_map,
+                model_dir,
+                sole_model_fallback.as_deref(),
+            ) {
                 name_map.insert(orig_name, imported);
             }
         }
@@ -273,9 +278,13 @@ mod tests {
 
     #[test]
     fn append_model_reference_inserts_before_the_closing_paren() {
-        let content = "(footprint \"Conn\"\n\t(pad \"1\" thru_hole circle (at 0 0) (size 1 1) (drill 1))\n)";
-        let patched =
-            append_model_reference(content, Path::new("/proj/3dmodels/Part.stp"), Some(Path::new("/proj")));
+        let content =
+            "(footprint \"Conn\"\n\t(pad \"1\" thru_hole circle (at 0 0) (size 1 1) (drill 1))\n)";
+        let patched = append_model_reference(
+            content,
+            Path::new("/proj/3dmodels/Part.stp"),
+            Some(Path::new("/proj")),
+        );
         assert!(patched.contains(r#"(model "${KIPRJMOD}/3dmodels/Part.stp""#));
         assert!(patched.contains("(pad \"1\" thru_hole circle (at 0 0) (size 1 1) (drill 1))"));
         assert!(patched.trim_end().ends_with(')'));
@@ -303,7 +312,8 @@ mod tests {
         model_name_map.insert("484040003".to_string(), model_dest.clone());
 
         let mut fi =
-            FootprintImporter::new(&lib_dir, false, Some(dir.path().to_path_buf()), |_| {}).unwrap();
+            FootprintImporter::new(&lib_dir, false, Some(dir.path().to_path_buf()), |_| {})
+                .unwrap();
         let name_map = fi.import_all(std::slice::from_ref(&src_fp), &model_name_map, None);
         assert_eq!(
             name_map.get("CONN_48404-0003_MOL"),
